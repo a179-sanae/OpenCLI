@@ -1497,6 +1497,64 @@
   },
   {
     "site": "aistudio",
+    "name": "audio",
+    "description": "Generate speech audio with Google AI Studio TTS models and save it locally",
+    "access": "write",
+    "domain": "aistudio.google.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "prompt",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "Script to speak; supports [pause] and [laughs] style speech tags"
+      },
+      {
+        "name": "model",
+        "type": "string",
+        "default": "",
+        "required": false,
+        "help": "TTS model id or unique name (default: first available audio model)"
+      },
+      {
+        "name": "output-dir",
+        "type": "string",
+        "required": false,
+        "help": "Output directory (default: ~/Music/aistudio)"
+      },
+      {
+        "name": "skip-download",
+        "type": "bool",
+        "default": false,
+        "required": false,
+        "help": "Do not download; return the AI Studio link only"
+      },
+      {
+        "name": "timeout",
+        "type": "int",
+        "default": 240,
+        "required": false,
+        "help": "Maximum generation time in seconds (default: 240)"
+      }
+    ],
+    "columns": [
+      "status",
+      "file",
+      "model",
+      "duration",
+      "link"
+    ],
+    "defaultFormat": "plain",
+    "type": "js",
+    "modulePath": "aistudio/audio.js",
+    "sourceFile": "aistudio/audio.js",
+    "navigateBefore": false,
+    "siteSession": "persistent"
+  },
+  {
+    "site": "aistudio",
     "name": "image",
     "description": "Generate images with Google AI Studio image models and save them locally",
     "access": "write",
@@ -1763,6 +1821,77 @@
     "type": "js",
     "modulePath": "aistudio/status.js",
     "sourceFile": "aistudio/status.js",
+    "navigateBefore": false,
+    "siteSession": "persistent"
+  },
+  {
+    "site": "aistudio",
+    "name": "video",
+    "description": "Generate videos with Google AI Studio Veo models and save them locally",
+    "access": "write",
+    "domain": "aistudio.google.com",
+    "strategy": "cookie",
+    "browser": true,
+    "args": [
+      {
+        "name": "prompt",
+        "type": "str",
+        "required": true,
+        "positional": true,
+        "help": "Video generation prompt"
+      },
+      {
+        "name": "model",
+        "type": "string",
+        "default": "",
+        "required": false,
+        "help": "Video model id or unique name (default: first available video model)"
+      },
+      {
+        "name": "aspect-ratio",
+        "type": "string",
+        "default": "16:9",
+        "required": false,
+        "help": "Aspect ratio shown by the model, e.g. 16:9, 9:16"
+      },
+      {
+        "name": "duration",
+        "type": "string",
+        "required": false,
+        "help": "Video duration shown by the model, e.g. 8s (omitted = leave unchanged)"
+      },
+      {
+        "name": "output-dir",
+        "type": "string",
+        "required": false,
+        "help": "Output directory (default: ~/Videos/aistudio)"
+      },
+      {
+        "name": "skip-download",
+        "type": "bool",
+        "default": false,
+        "required": false,
+        "help": "Do not download; return the AI Studio prompt link only"
+      },
+      {
+        "name": "timeout",
+        "type": "int",
+        "default": 600,
+        "required": false,
+        "help": "Maximum generation time in seconds (default: 600)"
+      }
+    ],
+    "columns": [
+      "status",
+      "file",
+      "model",
+      "duration",
+      "link"
+    ],
+    "defaultFormat": "plain",
+    "type": "js",
+    "modulePath": "aistudio/video.js",
+    "sourceFile": "aistudio/video.js",
     "navigateBefore": false,
     "siteSession": "persistent"
   },

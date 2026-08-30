@@ -4,7 +4,8 @@
 
 The adapter drives Google AI Studio through the OpenCLI Browser Bridge and the
 current Chrome login. It supports text and visual prompts, image generation,
-live model discovery, Run settings, and Google account checks.
+speech (TTS) generation, video (Veo) generation, live model discovery, Run
+settings, and Google account checks.
 
 ## Commands
 
@@ -12,6 +13,8 @@ live model discovery, Run settings, and Google account checks.
 |---|---|
 | `opencli aistudio ask <prompt> [options]` | Send a prompt and return only the completed model response |
 | `opencli aistudio image <prompt> [options]` | Generate images and optionally save every result locally |
+| `opencli aistudio audio <script> [options]` | Generate speech audio (TTS) and save the take locally |
+| `opencli aistudio video <prompt> [options]` | Generate videos (Veo) and save every take locally |
 | `opencli aistudio models [options]` | List models currently visible in the AI Studio model picker |
 | `opencli aistudio status` | Check page readiness, authentication, and the selected model |
 | `opencli aistudio login [--timeout N]` | Open Google login and wait for a verified AI Studio session |
@@ -55,6 +58,13 @@ opencli aistudio image "A red apple on a white table" `
 
 # Generate without exporting pixels; return the AI Studio prompt link.
 opencli aistudio image "A red apple" --skip-download true
+
+# Speak a script (supports [pause]-style speech tags) and save the WAV take.
+opencli aistudio audio "[cheerful] Welcome to OpenCLI!" --model gemini-2.5-flash-preview-tts
+
+# Generate a Veo video; renders take minutes, so the default timeout is 600s.
+opencli aistudio video "A drone shot over a coastline at sunrise" `
+  --model veo-3.1-lite-generate-preview --aspect-ratio 16:9
 
 # Discover current model ids and supported categories.
 opencli aistudio models --category text --query flash -f json
@@ -116,6 +126,33 @@ Before writing files, the adapter verifies that every distinct generated image
 was exported and that each asset has valid image data and dimensions of at least
 512×512. If only part of a multi-image response can be exported, the command
 fails with the AI Studio link instead of reporting partial success.
+
+## `audio` options
+
+TTS runs on the dedicated speech studio (`/generate-speech`), not the chat
+surface. The script goes into the "Speech block text" editor and each take is
+saved as a WAV/MP3 file.
+
+| Option | Meaning |
+|---|---|
+| `--model` | TTS model id (default: first available audio model) |
+| `--output-dir` | Output directory (default: `~/Music/aistudio`) |
+| `--skip-download` | Return the AI Studio link without downloading |
+| `--timeout` | Maximum generation time in seconds (default: 240) |
+
+## `video` options
+
+Veo reuses the chat surface under `/prompts/new_video`; renders take minutes,
+so both the stall and empty-shell windows are widened for this command.
+
+| Option | Meaning |
+|---|---|
+| `--model` | Video model id (default: first available video model; Veo tiers are paid) |
+| `--aspect-ratio` | `16:9` (default) or `9:16` |
+| `--duration` | Video duration shown by the model, e.g. `8s` (omitted = leave unchanged) |
+| `--output-dir` | Output directory (default: `~/Videos/aistudio`) |
+| `--skip-download` | Return the AI Studio link without downloading |
+| `--timeout` | Maximum generation time in seconds (default: 600) |
 
 ## `models` options
 

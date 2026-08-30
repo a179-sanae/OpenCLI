@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { execFile } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 import {
   ArgumentError,
@@ -10,6 +11,11 @@ import {
 
 export const AISTUDIO_DOMAIN = 'aistudio.google.com';
 export const AISTUDIO_HOME = `https://${AISTUDIO_DOMAIN}/prompts/new_chat`;
+// Audio (TTS) and video (Veo) generation live on dedicated pages: the TTS
+// studio is not a chat surface at all (no ms-chat-turn, no composer), while
+// Veo reuses the chat page machinery under /prompts/new_video.
+export const AISTUDIO_SPEECH_HOME = `https://${AISTUDIO_DOMAIN}/generate-speech`;
+export const AISTUDIO_VIDEO_HOME = `https://${AISTUDIO_DOMAIN}/prompts/new_video`;
 
 // A fixed default text model beats "whatever model is currently active": leaving
 // the active model alone (e.g. an image model from a prior `image` run) silently
@@ -274,7 +280,10 @@ export function aiStudioTurnFingerprint(turn) {
   const images = Array.isArray(turn?.images)
     ? turn.images.map((image) => String(image?.src || '')).filter(Boolean)
     : [];
-  return JSON.stringify({ role, text, images });
+  const videos = Array.isArray(turn?.videos)
+    ? turn.videos.map((video) => String(video?.src || '')).filter(Boolean)
+    : [];
+  return JSON.stringify({ role, text, images, videos });
 }
 
 export function findNewAIStudioTurns(snapshot, baseline, role = null) {
@@ -989,7 +998,7 @@ export async function getAIStudioPageState(page) {
 // Navigation is subject to the same shared --timeout budget as every wait: a
 // hung goto must not outlive the command deadline. Falls back to the bridge
 // default (30s) when no deadline is supplied.
-async function navigateAIStudioPage(page, url, options = {}) {
+export async function navigateAIStudioPage(page, url, options = {}) {
   if (options.deadline) assertAIStudioDeadline(options.deadline, 'navigation');
   const remaining = options.deadline ? options.deadline.expiresAt - Date.now() : 30_000;
   const timeout = options.deadline
@@ -1039,7 +1048,7 @@ export async function ensureAIStudioPage(page, options = {}) {
 }
 
 export async function startNewAIStudioChat(page, options = {}) {
-  await navigateAIStudioPage(page, AISTUDIO_HOME, options);
+  await navigateAIStudioPage(page, options.home || AISTUDIO_HOME, options);
   return ensureAIStudioPage(page, options);
 }
 
@@ -1452,7 +1461,10 @@ export async function openAIStudioModelDirect(page, requested, options = {}) {
   const match = String(raw || '').toLowerCase().match(/^(?:gemini|imagen|veo|lyria|gemma)-[a-z0-9][a-z0-9.-]*$/i);
   if (!match) return null;
   const modelId = match[0].toLowerCase();
-  await navigateAIStudioPage(page, `${AISTUDIO_HOME}?model=${encodeURIComponent(modelId)}`, options);
+  // Video models live on the new_video surface; navigating them to new_chat
+  // would bounce or render the wrong panel. Callers pass the home explicitly.
+  const modelHome = options.modelHome || AISTUDIO_HOME;
+  await navigateAIStudioPage(page, `${modelHome}?model=${encodeURIComponent(modelId)}`, options);
   try {
     await waitForAIStudioState(
       page,
@@ -1482,7 +1494,8 @@ export async function openAIStudioModelDirect(page, requested, options = {}) {
 }
 
 export async function selectAIStudioModel(page, requested, requiredCategory = null, options = {}) {
-  const direct = await openAIStudioModelDirect(page, requested, options);
+  const modelHome = requiredCategory === 'video' ? AISTUDIO_VIDEO_HOME : (options.modelHome || AISTUDIO_HOME);
+  const direct = await openAIStudioModelDirect(page, requested, { ...options, modelHome });
   if (direct) {
     // The direct URL activates exactly the requested model id; it must never
     // bypass the category contract (e.g. the image command landing on a text
@@ -1567,6 +1580,10 @@ const AI_STUDIO_SELECT_LABELS = Object.freeze({
   'resolution': ['resolution', '分辨率'],
   'thinking level': ['thinking level', '思考级别', '思考等级'],
   'media resolution': ['media resolution', '媒体分辨率', '媒体解析度'],
+  'video duration': ['video duration', '视频时长'],
+  'frame rate': ['frame rate', '帧率'],
+  'output resolution': ['output resolution', '输出分辨率'],
+  'number of results': ['number of results', '结果数量'],
 });
 
 const AI_STUDIO_NUMBER_LABELS = Object.freeze({
@@ -1601,11 +1618,28 @@ export async function setAIStudioSelect(page, label, requested, options = {}) {
     const normalize = (val) => String(val || '').replace(/\s+/g, ' ').trim().toLowerCase();
     const expected = normalize(ariaLabel);
     const allowed = labelMap[expected] || [expected];
+    // The Veo selects carry no aria-label and no mat-label: the setting row
+    // renders as plain text "<label> <value>" (e.g. "Video duration 8s"), so a
+    // bounded ancestor-row lookup is the only handle. The climb stops after
+    // four levels and the row text must stay label-length + a short value so
+    // the whole panel never matches.
+    const matchesRowLabel = (el) => {
+      let node = el;
+      for (let depth = 0; node && depth < 4; depth += 1, node = node.parentElement) {
+        const text = normalize(node.textContent);
+        if (!text) continue;
+        for (const candidate of allowed) {
+          const token = normalize(candidate);
+          if (text.startsWith(token) && text.length - token.length <= 30) return true;
+        }
+      }
+      return false;
+    };
     const isMatch = (el) => {
       if (allowed.includes(normalize(el.getAttribute('aria-label')))) return true;
       const ff = el.closest('mat-form-field');
       if (ff && allowed.includes(normalize(ff.querySelector('mat-label')?.textContent))) return true;
-      return false;
+      return matchesRowLabel(el);
     };
     const selects = Array.from(document.querySelectorAll('ms-run-settings mat-select'));
     const select = selects.find(isMatch);
@@ -1680,11 +1714,23 @@ export async function setAIStudioSelect(page, label, requested, options = {}) {
       const normalize = (val) => String(val || '').replace(/\s+/g, ' ').trim().toLowerCase();
       const expected = normalize(ariaLabel);
       const allowed = labelMap[expected] || [expected];
+      const matchesRowLabel = (el) => {
+        let node = el;
+        for (let depth = 0; node && depth < 4; depth += 1, node = node.parentElement) {
+          const text = normalize(node.textContent);
+          if (!text) continue;
+          for (const candidate of allowed) {
+            const token = normalize(candidate);
+            if (text.startsWith(token) && text.length - token.length <= 30) return true;
+          }
+        }
+        return false;
+      };
       const isMatch = (el) => {
         if (allowed.includes(normalize(el.getAttribute('aria-label')))) return true;
         const ff = el.closest('mat-form-field');
         if (ff && allowed.includes(normalize(ff.querySelector('mat-label')?.textContent))) return true;
-        return false;
+        return matchesRowLabel(el);
       };
       const select = Array.from(document.querySelectorAll('ms-run-settings mat-select')).find(isMatch);
       const value = select?.querySelector('.mat-mdc-select-min-line, .mat-select-value-text');
@@ -2320,6 +2366,7 @@ export async function applyAIStudioSettings(page, options = {}) {
   }
   if (options.outputMode) await setAIStudioOutputMode(page, options.outputMode, options);
   if (options.aspectRatio) await setAIStudioSelect(page, 'Aspect ratio', options.aspectRatio, options);
+  if (options.videoDuration) await setAIStudioSelect(page, 'Video duration', options.videoDuration, options);
   if (options.resolution) {
     const applied = await setAIStudioSelect(page, 'Resolution', options.resolution, {
       ...options,
@@ -2826,6 +2873,15 @@ export async function readAIStudioSnapshot(page) {
         !!deepQueryOne(turn, 'ms-chat-loading-indicator, [role="progressbar"], [aria-busy="true"]')
         || (!text && /正在思考|思考中|生成中|thinking|loading|generating/i.test(rawTurnText))
       );
+      // A media render (Veo) can sit in a loading turn for minutes. Its
+      // progress label is the liveness signal: the response wait treats a
+      // CHANGING progress text as activity, so a genuinely frozen render still
+      // trips the stall detector while a ticking one never does.
+      const loadingText = loading
+        ? normalize(deepQueryAll(turn, '[role="progressbar"], [class*="progress" i]')
+          .map((node) => node?.innerText || node?.textContent || '')
+          .join(' ')).slice(0, 200)
+        : '';
       // A structural error node inside the turn is authoritative; the whole-turn
       // text scan is only a fallback for short turns with an unmistakable idiom.
       const isStructuredErrorNode = (node) => {
@@ -2908,10 +2964,29 @@ export async function readAIStudioSnapshot(page) {
         if (!src || isDecorativeImage(image)) return false;
         return !(image.naturalWidth || image.width) || !(image.naturalHeight || image.height);
       });
+      // Veo renders its result as a <video> element inside the model turn. Like
+      // images, a video without decoded dimensions is still rendering and must
+      // never count as a finished generation.
+      const videos = role === 'model' ? deepQueryAll(turn, 'video').flatMap((video) => {
+        const src = video.currentSrc || video.src || '';
+        if (!src) return [];
+        return {
+          src,
+          width: video.videoWidth || 0,
+          height: video.videoHeight || 0,
+          duration: Number.isFinite(Number(video.duration)) ? Number(video.duration) : 0,
+          ready: (video.readyState || 0) >= 2 && (video.videoWidth || 0) > 0,
+        };
+      }) : [];
+      const pendingVideoDecode = role === 'model' && deepQueryAll(turn, 'video').some((video) => {
+        const src = video.currentSrc || video.src || '';
+        return !!src && !((video.videoWidth || 0) > 0);
+      });
       const fingerprint = JSON.stringify({
         role,
         text: normalize(text),
         images: images.map((image) => image.src),
+        videos: videos.map((video) => video.src),
       });
       return {
         id: turn.id || fingerprint || `${role}-${index}`,
@@ -2919,7 +2994,10 @@ export async function readAIStudioSnapshot(page) {
         role,
         text,
         images,
+        videos,
         pendingDecode,
+        pendingVideoDecode,
+        loadingText,
         thinking: hasThinking,
         thinkingText,
         thinkingOnly,
@@ -3613,8 +3691,13 @@ export async function waitForAIStudioResponse(page, baseline, timeoutSeconds, op
   // A background run must never raise the browser window; the empty-shell
   // render nudge below is gated on this mode.
   const windowMode = page?.windowMode;
-  const STALL_TIMEOUT_MS = 45000;
+  const STALL_TIMEOUT_MS = (Number(options.stallTimeoutSeconds) > 0
+    ? Number(options.stallTimeoutSeconds)
+    : 45) * 1000;
   const TEXT_CONFIRM_MS = 1500;
+  const EMPTY_SHELL_TIMEOUT_MS = (Number(options.emptyShellTimeoutSeconds) > 0
+    ? Number(options.emptyShellTimeoutSeconds)
+    : 60) * 1000;
   let stableKey = '';
   let stableCount = 0;
   let emptyShellSince = 0;
@@ -3632,29 +3715,39 @@ export async function waitForAIStudioResponse(page, baseline, timeoutSeconds, op
       const now = Date.now();
       const generatedImages = (candidate?.images || [])
         .filter((image) => /^blob:|^data:/.test(String(image?.src || '')));
+      const generatedVideos = (candidate?.videos || [])
+        .filter((video) => /^blob:|^data:/.test(String(video?.src || '')));
       const pendingImageDecode = !!candidate?.pendingDecode
         || generatedImages.some((image) => !image.width || !image.height);
+      const pendingVideoDecode = !!candidate?.pendingVideoDecode
+        || generatedVideos.some((video) => !video.ready);
       // A complete-but-empty turn shell is not a stall: it is either a slow
       // image render (the empty-shell branch below owns its timeout) or text
-      // that is about to materialize. A still-decoding image is likewise an
-      // active render. Both states must never trip the stall detector, or the
-      // dedicated empty-shell timeout would be unreachable.
+      // that is about to materialize. A still-decoding image or video is
+      // likewise an active render. Both states must never trip the stall
+      // detector, or the dedicated empty-shell timeout would be unreachable.
       const emptyShell = !snapshot.isGenerating && !!candidate?.complete
-        && !candidate.loading && !candidate.text && (candidate.images?.length || 0) === 0;
-      const stallExempt = emptyShell || pendingImageDecode;
+        && !candidate.loading && !candidate.text
+        && (candidate.images?.length || 0) === 0 && (candidate.videos?.length || 0) === 0;
+      const stallExempt = emptyShell || pendingImageDecode || pendingVideoDecode;
       // Stall detection: if the page state (loading, completion, text length,
-      // streamed thinking, image count, generating flag, or alerts) has not
-      // changed for a long stretch while nothing is exempt, the generation is
-      // stuck (e.g. a submission that never registered). Failing early beats
-      // idling against the full deadline. Streamed thinking text counts as
-      // activity so long reasoning phases never trip the detector.
+      // streamed thinking, media count, media progress label, generating flag,
+      // or alerts) has not changed for a long stretch while nothing is exempt,
+      // the generation is stuck (e.g. a submission that never registered).
+      // Failing early beats idling against the full deadline. Streamed
+      // thinking text and a ticking media progress label both count as
+      // activity: long reasoning phases and minute-scale Veo renders never
+      // trip the detector, but a genuinely frozen render still does.
       const activityFingerprint = JSON.stringify([
         candidate?.loading ?? null,
+        candidate?.loadingText ?? '',
         candidate?.complete ?? null,
         candidate?.text?.length ?? 0,
         candidate?.thinkingText?.length ?? 0,
         candidate?.images?.length ?? 0,
+        candidate?.videos?.length ?? 0,
         candidate?.pendingDecode ?? false,
+        candidate?.pendingVideoDecode ?? false,
         snapshot?.isGenerating ?? null,
         snapshot?.alerts?.length ?? 0,
       ]);
@@ -3708,11 +3801,13 @@ export async function waitForAIStudioResponse(page, baseline, timeoutSeconds, op
           if (restoreMode !== 'cdp-restored') await restoreAIStudioWindow(pageTitle);
         }
         // A complete-but-empty model turn that survives the window-restore nudge
-        // is a blocked/refused generation OR a slow image model still rendering
+        // is a blocked/refused generation OR a slow media model still rendering
         // (e.g. Nano Banana Pro draws the footer before its image materializes).
-        // 8s was too eager and killed real Pro renders; 60s still fails refusals
-        // ~4x faster than the default 240s deadline without dropping slow renders.
-        if (emptyMs >= 60000) {
+        // 8s was too eager and killed real Pro renders; the default 60s still
+        // fails refusals ~4x faster than the default 240s deadline without
+        // dropping slow renders. Video callers raise the window (Veo renders
+        // for minutes) via emptyShellTimeoutSeconds.
+        if (emptyMs >= EMPTY_SHELL_TIMEOUT_MS) {
           // A silently blocked generation renders no classifier-visible error, so
           // capture the raw page surfaces before giving up: the thrown error then
           // carries verbatim evidence instead of asking the user to inspect the
@@ -3740,21 +3835,23 @@ export async function waitForAIStudioResponse(page, baseline, timeoutSeconds, op
         emptyShellSince = 0;
       }
 
-      const key = JSON.stringify({ text: candidate.text, images: candidate.images.map((image) => image.src) });
+      const key = JSON.stringify({ text: candidate.text, images: candidate.images.map((image) => image.src), videos: (candidate.videos || []).map((video) => video.src) });
       if (key === stableKey) stableCount += 1;
       else {
         stableKey = key;
         stableCount = 1;
       }
-      // A generated image counts as done only once it has decoded to real
-      // pixels; a 0x0 blob is still rendering or failed to decode. While one is
-      // pending, none of the completion signals below may fire — otherwise a
-      // broken blob would be returned as a finished generation (complete flag or
-      // a re-enabled Run button must not bypass the decode).
-      const completionSignal = stableCount >= 2 && !pendingImageDecode && (
+      // Generated media counts as done only once it has decoded to real
+      // pixels/audio; a 0x0 blob is still rendering or failed to decode. While
+      // one is pending, none of the completion signals below may fire —
+      // otherwise a broken blob would be returned as a finished generation
+      // (complete flag or a re-enabled Run button must not bypass the decode).
+      const completionSignal = stableCount >= 2 && !pendingImageDecode && !pendingVideoDecode && (
         candidate.complete
         || (!candidate.loading && generatedImages.some((image) => image.width > 0 && image.height > 0))
-        || (!snapshot.isGenerating && snapshot.runButtonFound && !snapshot.runButtonDisabled && candidate.images.length > 0)
+        || (!candidate.loading && generatedVideos.some((video) => video.ready))
+        || (!snapshot.isGenerating && snapshot.runButtonFound && !snapshot.runButtonDisabled
+          && (candidate.images.length > 0 || (candidate.videos || []).length > 0))
       );
       // A text response is only done once its content has materialized in the
       // DOM and stayed unchanged long enough: AI Studio's virtual-scrolled
@@ -3769,8 +3866,8 @@ export async function waitForAIStudioResponse(page, baseline, timeoutSeconds, op
         textConfirmSince = 0;
         return null;
       }
-      if (candidate.images.length) {
-        // Image generations are binary: a decoded blob is finished; no text
+      if (candidate.images.length || (candidate.videos || []).length) {
+        // Media generations are binary: a decoded asset is finished; no text
         // confirmation window applies.
         return { ...candidate, url: snapshot.url };
       }
@@ -3927,4 +4024,180 @@ export async function exportAIStudioImages(page, urls, options = {}) {
   }, uniqueUrls, deadlineAt);
   if (options.deadline) assertAIStudioDeadline(options.deadline, 'image export');
   return result;
+}
+
+// One submission action per speech run: the speech studio shares the chat
+// page's ms-run-button submit element, so the same single-click contract
+// applies — the caller never issues a second click when a take is slow.
+export async function clickAIStudioSpeechRunButton(page) {
+  return evaluatePage(page, 'AI Studio speech run click', (runSelectors) => {
+    const runButton = runSelectors.map((selector) => document.querySelector(selector)).find(Boolean);
+    if (!runButton) return { ok: false, reason: 'run button not found' };
+    if (runButton.disabled || runButton.getAttribute('aria-disabled') === 'true') {
+      return { ok: false, reason: 'run button disabled' };
+    }
+    runButton.click();
+    return { ok: true };
+  }, AI_STUDIO_SELECTORS.runButton);
+}
+
+// The speech studio (generate-speech) is not a chat surface: it renders no
+// ms-chat-turn nodes at all. The script lives in fixed textareas and every
+// generated take lands in an <audio> player under ms-music-player in the page
+// footer, typically carrying an inline data:audio/wav;base64 URL.
+export async function readAIStudioSpeechState(page) {
+  return evaluatePage(page, 'AI Studio speech state', (runSelectors) => {
+    const normalize = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const scriptInputs = Array.from(document.querySelectorAll(
+      'textarea[aria-label="Speech block text"], textarea[aria-label*="Speech block" i], textarea[aria-label*="台词" i]',
+    ));
+    // A finished take's source can be hundreds of KB of base64; polls only
+    // carry a bounded srcKey (prefix + length) and the full source is resolved
+    // once by exportAIStudioSpeechAudio after the take has settled.
+    const audios = Array.from(document.querySelectorAll('ms-music-player audio, audio')).map((audio) => {
+      const src = String(audio.currentSrc || audio.src || '');
+      return {
+        srcKey: src ? `${src.slice(0, 48)}:${src.length}` : '',
+        kind: (src.match(/^([a-z]+):/i) || [])[1] || null,
+        duration: Number.isFinite(Number(audio.duration)) ? Number(audio.duration) : 0,
+        ready: !!src && (audio.readyState || 0) >= 2,
+      };
+    });
+    const runButton = runSelectors.map((selector) => document.querySelector(selector)).find(Boolean);
+    const runLabel = runButton
+      ? normalize(`${runButton.getAttribute('aria-label') || ''} ${runButton.textContent || ''}`)
+      : '';
+    return {
+      url: window.location.href,
+      hasScriptInput: scriptInputs.length > 0,
+      inputCount: scriptInputs.length,
+      audios,
+      isGenerating: /^(?:stop|cancel|停止生成|取消)(?:\s|$)/i.test(runLabel),
+      runButtonFound: !!runButton,
+      runButtonDisabled: !!runButton && (runButton.disabled || runButton.getAttribute('aria-disabled') === 'true'),
+      currentModel: (document.querySelector('ms-model-selector')?.innerText || '')
+        .match(/\b(?:gemini|imagen|veo|lyria|gemma)-[a-z0-9][a-z0-9.-]*\b/i)?.[0]?.toLowerCase() || null,
+    };
+  }, AI_STUDIO_SELECTORS.runButton);
+}
+
+// Resolve the full playable source for a speech take identified by its srcKey.
+// Inline data: URLs are returned verbatim; blob:/remote sources are fetched in
+// the page and converted to a data URL under the shared deadline.
+export async function exportAIStudioSpeechAudio(page, srcKey, options = {}) {
+  if (options.deadline) assertAIStudioDeadline(options.deadline, 'audio export');
+  const result = await evaluatePage(page, 'AI Studio audio export', async (key, absoluteDeadline) => {
+    const audio = Array.from(document.querySelectorAll('ms-music-player audio, audio')).find((node) => {
+      const src = String(node.currentSrc || node.src || '');
+      return !!src && `${src.slice(0, 48)}:${src.length}` === key;
+    });
+    if (!audio) return null;
+    const src = String(audio.currentSrc || audio.src || '');
+    const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error('Failed to read audio blob'));
+      reader.readAsDataURL(blob);
+    });
+    let dataUrl = '';
+    if (src.startsWith('data:')) {
+      dataUrl = src;
+    } else {
+      // A hung blob fetch must not stall the export; abort under the shared
+      // deadline budget like the image exporter.
+      const controller = new AbortController();
+      const remainingMs = absoluteDeadline == null
+        ? 15_000
+        : Math.max(1, Math.min(15_000, absoluteDeadline - Date.now()));
+      const timer = setTimeout(() => controller.abort(), remainingMs);
+      try {
+        const response = await fetch(src, { credentials: 'include', signal: controller.signal });
+        if (response.ok) dataUrl = await blobToDataUrl(await response.blob());
+      } catch {}
+      finally {
+        clearTimeout(timer);
+      }
+    }
+    if (!dataUrl) return null;
+    return {
+      src,
+      dataUrl,
+      mimeType: dataUrl.match(/^data:([^;]+);/i)?.[1] || 'audio/wav',
+      duration: Number.isFinite(Number(audio.duration)) ? Number(audio.duration) : 0,
+    };
+  }, srcKey, options.deadline?.expiresAt ?? null);
+  if (options.deadline) assertAIStudioDeadline(options.deadline, 'audio export');
+  return result;
+}
+
+// Export a generated video by its element source (blob:/remote — the src
+// string itself is short, unlike inline audio data URLs). Veo assets have no
+// canvas-style fallback: a failed fetch surfaces as null with the retained-tab
+// guidance provided by the caller.
+export async function exportAIStudioVideoAsset(page, targetSrc, options = {}) {
+  if (!String(targetSrc || '')) throw new ArgumentError('video source must not be empty');
+  if (options.deadline) assertAIStudioDeadline(options.deadline, 'video export');
+  const result = await evaluatePage(page, 'AI Studio video export', async (src, absoluteDeadline) => {
+    const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error('Failed to read video blob'));
+      reader.readAsDataURL(blob);
+    });
+    const video = Array.from(document.querySelectorAll('ms-chat-turn video, video')).find((node) => (node.currentSrc || node.src || '') === src) || null;
+    const controller = new AbortController();
+    const remainingMs = absoluteDeadline == null
+      ? 60_000
+      : Math.max(1, Math.min(60_000, absoluteDeadline - Date.now()));
+    const timer = setTimeout(() => controller.abort(), remainingMs);
+    let dataUrl = '';
+    try {
+      const response = await fetch(src, { credentials: 'include', signal: controller.signal });
+      if (response.ok) dataUrl = await blobToDataUrl(await response.blob());
+    } catch {}
+    finally {
+      clearTimeout(timer);
+    }
+    if (!dataUrl) return null;
+    return {
+      src,
+      dataUrl,
+      mimeType: dataUrl.match(/^data:([^;]+);/i)?.[1] || 'video/mp4',
+      duration: Number.isFinite(Number(video?.duration)) ? Number(video.duration) : 0,
+      width: video?.videoWidth || 0,
+      height: video?.videoHeight || 0,
+    };
+  }, targetSrc, options.deadline?.expiresAt ?? null);
+  if (options.deadline) assertAIStudioDeadline(options.deadline, 'video export');
+  return result;
+}
+
+// Shared output helpers for the media commands (image keeps its own copies;
+// audio/video default to different directories and mime → extension maps).
+export function resolveAIStudioOutputDir(value, defaultDir) {
+  const raw = String(value || '').trim();
+  if (!raw) return defaultDir;
+  if (raw === '~') return os.homedir();
+  if (raw.startsWith('~/') || raw.startsWith('~\\')) return path.join(os.homedir(), raw.slice(2));
+  return path.resolve(raw);
+}
+
+export function aiStudioExtensionFromMime(mimeType) {
+  const mime = String(mimeType || '').toLowerCase();
+  if (mime.includes('wav')) return '.wav';
+  if (mime.includes('mpeg') || mime.includes('mp3')) return '.mp3';
+  if (mime.includes('ogg')) return '.ogg';
+  if (mime.includes('webm')) return '.webm';
+  if (mime.includes('mp4')) return '.mp4';
+  if (mime.includes('jpeg') || mime.includes('jpg')) return '.jpg';
+  if (mime.includes('gif')) return '.gif';
+  return '.png';
+}
+
+export function nextAvailableAIStudioPath(directory, baseName, extension) {
+  let candidate = path.join(directory, `${baseName}${extension}`);
+  for (let suffix = 2; fs.existsSync(candidate); suffix += 1) {
+    candidate = path.join(directory, `${baseName}_${suffix}${extension}`);
+  }
+  return candidate;
 }

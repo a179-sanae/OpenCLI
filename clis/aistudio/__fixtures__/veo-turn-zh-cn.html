@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<!-- zh-CN fixture for the Veo video surface (video command contract): chat
+     machinery on /prompts/new_video with a video take inside the model turn.
+     Mirrors the live DOM observed 2026-08-30 on aistudio.google.com. -->
+<html lang="zh-CN">
+<body>
+  <ms-run-settings>
+    <ms-model-selector>
+      <button class="model-selector-card" aria-label="Select primary model">
+        <span class="title">Veo 3.1 lite</span>
+        <span>veo-3.1-lite-generate-preview</span>
+      </button>
+    </ms-model-selector>
+    <mat-form-field>
+      <mat-label>Aspect ratio</mat-label>
+      <mat-select aria-label="Aspect ratio">16:9</mat-select>
+    </mat-form-field>
+    <div class="settings-row">视频时长 8s</div>
+    <div class="settings-row">帧率 24 fps</div>
+    <div class="settings-row">输出分辨率 720p</div>
+  </ms-run-settings>
+  <ms-prompt-box>
+    <textarea aria-label="Enter a prompt to generate a video" placeholder="输入提示词以生成视频"></textarea>
+  </ms-prompt-box>
+  <ms-run-button>
+    <button type="submit" aria-label="停止生成">停止生成</button>
+  </ms-run-button>
+  <ms-chat-turn id="turn-video-1">
+    <div class="chat-turn-container model render">
+      <div class="turn-content">
+        <video src="blob:https://aistudio.google.com/veo-take-1" data-test="generated-video"></video>
+      </div>
+      <div class="turn-footer">
+        <button aria-label="Bad response"></button>
+      </div>
+    </div>
+  </ms-chat-turn>
+</body>
+</html>

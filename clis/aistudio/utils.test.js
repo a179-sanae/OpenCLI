@@ -14,6 +14,8 @@ import {
   collectAIStudioEmptyShellEvidence,
   createAIStudioDeadline,
   ensureAIStudioPage,
+  exportAIStudioSpeechAudio,
+  exportAIStudioVideoAsset,
   focusAIStudioComposer,
   findNewAIStudioTurns,
   findNewModelTurn,
@@ -30,6 +32,7 @@ import {
   openAIStudioModelDirect,
   parseModelCardText,
   readAIStudioSnapshot,
+  readAIStudioSpeechState,
   resolveAIStudioModelSearchResult,
   selectAIStudioModel,
   setAIStudioSafetySettings,
@@ -2017,4 +2020,388 @@ it('cleans up the upload window when a chunk push fails', async () => {
   const result = await injectAIStudioFiles(page, files, 'input[data-test-upload-file-input]');
   expect(result).toEqual({ ok: false, reason: 'upload chunk failed' });
   expect(evaluated.some((fnStr) => fnStr.includes('delete window[key]'))).toBe(true);
+});
+
+// ── video (Veo) coverage ────────────────────────────────────────────────
+
+function videoModelTurnEl(video) {
+  return {
+    id: 'model-turn-1',
+    classList: { contains: (name) => name === 'model' },
+    getAttribute: () => null,
+    innerText: 'Model',
+    textContent: 'Model',
+    querySelector: (selector) => {
+      if (selector === '.chat-turn-container') {
+        return { classList: { contains: (name) => name === 'model' }, getAttribute: () => null };
+      }
+      if (selector === '[role="heading"]') return { innerText: 'Model', textContent: 'Model' };
+      if (selector.includes('turn-footer') || selector.includes('feedback') || selector.includes('Good response') || selector.includes('有帮助')) return {};
+      return null;
+    },
+    querySelectorAll: (selector) => (selector === 'video' ? [video] : []),
+  };
+}
+
+async function readVideoTurnSnapshot(video) {
+  const fakeDocument = {
+    querySelectorAll: (selector) => (selector === 'ms-chat-turn' ? [videoModelTurnEl(video)] : []),
+    querySelector: () => null,
+  };
+  const previousDocument = globalThis.document;
+  const previousWindow = globalThis.window;
+  globalThis.document = fakeDocument;
+  globalThis.window = { location: { href: 'https://aistudio.google.com/prompts/new_video' } };
+  try {
+    return await readAIStudioSnapshot({
+      evaluate: async (fn, ...args) => {
+        const script = new vm.Script(`(${fn.toString()})(${args.map((arg) => JSON.stringify(arg)).join(', ')})`);
+        return script.runInNewContext({ document: fakeDocument, window: globalThis.window });
+      },
+    });
+  } finally {
+    globalThis.document = previousDocument;
+    globalThis.window = previousWindow;
+  }
+}
+
+it('snapshot collects Veo video takes and reports pending decode', async () => {
+  const undecoded = await readVideoTurnSnapshot({
+    currentSrc: 'blob:https://aistudio.google.com/v1',
+    src: 'blob:https://aistudio.google.com/v1',
+    videoWidth: 0,
+    videoHeight: 0,
+    duration: NaN,
+    readyState: 0,
+    getAttribute: () => null,
+  });
+  expect(undecoded.turns[0].videos[0].src).toBe('blob:https://aistudio.google.com/v1');
+  expect(undecoded.turns[0].videos[0].ready).toBe(false);
+  expect(undecoded.turns[0].pendingVideoDecode).toBe(true);
+
+  const decoded = await readVideoTurnSnapshot({
+    currentSrc: 'blob:https://aistudio.google.com/v1',
+    src: 'blob:https://aistudio.google.com/v1',
+    videoWidth: 1280,
+    videoHeight: 720,
+    duration: 8,
+    readyState: 2,
+    getAttribute: () => null,
+  });
+  expect(decoded.turns[0].videos[0].ready).toBe(true);
+  expect(decoded.turns[0].pendingVideoDecode).toBe(false);
+});
+
+it('response waiting does not treat an undecoded video take as done until it decodes', async () => {
+  const undecodedTurn = {
+    turns: [{
+      role: 'model',
+      text: '',
+      images: [],
+      videos: [{ src: 'blob:https://aistudio.google.com/v1', width: 0, height: 0, duration: 0, ready: false }],
+      pendingVideoDecode: true,
+      loading: false,
+      complete: false,
+    }],
+    alerts: [],
+    isGenerating: true,
+    runButtonFound: true,
+    runButtonDisabled: true,
+    url: 'https://aistudio.google.com/prompts/new_video',
+  };
+  const decodedTurn = {
+    turns: [{
+      role: 'model',
+      text: '',
+      images: [],
+      videos: [{ src: 'blob:https://aistudio.google.com/v1', width: 1280, height: 720, duration: 8, ready: true }],
+      pendingVideoDecode: false,
+      loading: false,
+      complete: false,
+    }],
+    alerts: [],
+    isGenerating: true,
+    runButtonFound: true,
+    runButtonDisabled: true,
+    url: 'https://aistudio.google.com/prompts/new_video',
+  };
+  const snapshots = [undecodedTurn, undecodedTurn, decodedTurn];
+  const waits = [];
+  const page = {
+    async wait(seconds) {
+      waits.push(seconds);
+    },
+    async evaluate() {
+      return snapshots.shift();
+    },
+  };
+
+  const result = await waitForAIStudioResponse(page, { turns: [] }, 5);
+
+  expect(result.videos[0].src).toBe('blob:https://aistudio.google.com/v1');
+  expect(result.videos[0].ready).toBe(true);
+  expect(waits).toEqual([0.2, 0.2]);
+});
+
+it('response waiting treats a ticking video progress label as activity and a frozen one as a stall', async () => {
+  vi.useFakeTimers();
+  // A Veo render sits in a loading turn for minutes; the only liveness signal
+  // is the progress label. A label that never changes is a genuine stall and
+  // must keep failing fast at the 45s budget.
+  const frozen = {
+    turns: [{
+      role: 'model',
+      text: '',
+      images: [],
+      videos: [],
+      loading: true,
+      loadingText: 'Generating video 45%',
+      complete: false,
+    }],
+    alerts: [],
+    isGenerating: true,
+    runButtonFound: true,
+    runButtonDisabled: true,
+    url: 'https://aistudio.google.com/prompts/new_video',
+  };
+  const frozenPage = {
+    async wait(seconds) {
+      await vi.advanceTimersByTimeAsync(seconds * 1000);
+    },
+    async evaluate() {
+      return { ...frozen, turns: [{ ...frozen.turns[0] }] };
+    },
+  };
+  await expect(waitForAIStudioResponse(frozenPage, { turns: [] }, 120)).rejects.toThrow('AI Studio generation stalled');
+  vi.useRealTimers();
+
+  // A ticking progress label resets the stall window every poll; the take
+  // completes once the decoded video materializes.
+  vi.useFakeTimers();
+  let tick = 0;
+  const doneTurn = {
+    turns: [{
+      role: 'model',
+      text: '',
+      images: [],
+      videos: [{ src: 'blob:https://aistudio.google.com/v1', width: 1280, height: 720, duration: 8, ready: true }],
+      pendingVideoDecode: false,
+      loading: false,
+      complete: true,
+    }],
+    alerts: [],
+    isGenerating: false,
+    runButtonFound: true,
+    runButtonDisabled: false,
+    url: 'https://aistudio.google.com/prompts/new_video',
+  };
+  const tickingPage = {
+    async wait(seconds) {
+      await vi.advanceTimersByTimeAsync(seconds * 1000);
+    },
+    async evaluate() {
+      tick += 1;
+      if (tick <= 400) {
+        return { turns: [{ role: 'model', text: '', images: [], videos: [], loading: true, loadingText: `Generating video ${tick % 100}%`, complete: false }], alerts: [], isGenerating: true, runButtonFound: true, runButtonDisabled: true, url: 'u' };
+      }
+      return { ...doneTurn, turns: [{ ...doneTurn.turns[0] }] };
+    },
+  };
+  const result = await waitForAIStudioResponse(tickingPage, { turns: [] }, 120);
+  expect(result.videos[0].ready).toBe(true);
+  vi.useRealTimers();
+});
+
+it('emptyShellTimeoutSeconds raises the empty-shell window for slow video renders', async () => {
+  vi.useFakeTimers();
+  // 700 polls at 0.2s = 140s of complete-but-empty shell: past the default 60s
+  // empty-shell budget, safely inside the 300s video budget, and the wait must
+  // keep polling until the decoded video materializes.
+  const emptyTurn = {
+    turns: [{ role: 'model', text: '', images: [], videos: [], loading: false, complete: true }],
+    alerts: [],
+    isGenerating: false,
+    runButtonFound: false,
+    runButtonDisabled: false,
+    url: 'https://aistudio.google.com/prompts/new_video',
+  };
+  const doneTurn = {
+    turns: [{
+      role: 'model',
+      text: '',
+      images: [],
+      videos: [{ src: 'blob:https://aistudio.google.com/v1', width: 640, height: 480, duration: 8, ready: true }],
+      pendingVideoDecode: false,
+      loading: false,
+      complete: true,
+    }],
+    alerts: [],
+    isGenerating: false,
+    runButtonFound: false,
+    runButtonDisabled: false,
+    url: 'https://aistudio.google.com/prompts/new_video',
+  };
+  let poll = 0;
+  const page = {
+    async wait(seconds) {
+      await vi.advanceTimersByTimeAsync(seconds * 1000);
+    },
+    async evaluate() {
+      poll += 1;
+      const source = poll <= 700 ? emptyTurn : doneTurn;
+      return { ...source, turns: [{ ...source.turns[0] }] };
+    },
+  };
+
+  const result = await waitForAIStudioResponse(page, { turns: [] }, 400, { emptyShellTimeoutSeconds: 300 });
+  expect(result.videos[0].ready).toBe(true);
+  vi.useRealTimers();
+});
+
+it('video asset export fetches the take source and reports duration', async () => {
+  const videoEl = {
+    currentSrc: 'blob:https://aistudio.google.com/v1',
+    src: 'blob:https://aistudio.google.com/v1',
+    duration: 8,
+    videoWidth: 1280,
+    videoHeight: 720,
+  };
+  const fakeDocument = {
+    querySelectorAll: (selector) => (selector === 'ms-chat-turn video, video' ? [videoEl] : []),
+  };
+  const result = await exportAIStudioVideoAsset({
+    evaluate: async (fn, ...args) => {
+      const script = new vm.Script(`(async () => (${fn.toString()})(${args.map((arg) => JSON.stringify(arg)).join(', ')}))()`);
+      return script.runInNewContext({
+        document: fakeDocument,
+        window: { location: { href: 'https://aistudio.google.com/prompts/new_video' } },
+        setTimeout,
+        clearTimeout,
+        fetch: async () => ({
+          ok: true,
+          blob: async () => ({ type: 'video/mp4' }),
+        }),
+        FileReader: class {
+          readAsDataURL() {
+            this.result = 'data:video/mp4;base64,AAAA';
+            this.onloadend();
+          }
+        },
+        AbortController,
+      });
+    },
+  }, 'blob:https://aistudio.google.com/v1');
+  expect(result.mimeType).toBe('video/mp4');
+  expect(result.dataUrl).toBe('data:video/mp4;base64,AAAA');
+  expect(result.duration).toBe(8);
+  expect(result.width).toBe(1280);
+});
+
+// ── audio (TTS speech studio) coverage ──────────────────────────────────
+
+const SPEECH_TAKE_SRC = 'data:audio/wav;base64,UklGRg==';
+
+function speechFakeDocument({ withAudio = true, runLabel = 'Run', modelText = 'Gemini 2.5 Flash Preview TTS gemini-2.5-flash-preview-tts' } = {}) {
+  const audioEl = {
+    src: SPEECH_TAKE_SRC,
+    currentSrc: SPEECH_TAKE_SRC,
+    duration: 3.97,
+    readyState: 4,
+  };
+  return {
+    querySelectorAll: (selector) => {
+      if (selector.includes('Speech block') || selector.includes('台词')) {
+        return [{ getAttribute: () => 'Speech block text' }];
+      }
+      if (selector === 'ms-music-player audio, audio') return withAudio ? [audioEl] : [];
+      return [];
+    },
+    querySelector: (selector) => {
+      if (selector.includes('ms-model-selector')) return modelText ? { innerText: modelText } : null;
+      if (selector.includes('ms-run-button')) {
+        return { disabled: false, getAttribute: (name) => (name === 'aria-label' ? runLabel : null), textContent: runLabel };
+      }
+      return null;
+    },
+  };
+}
+
+function speechVmContext(fakeDocument) {
+  return {
+    document: fakeDocument,
+    window: { location: { href: 'https://aistudio.google.com/generate-speech' } },
+    fetch: async () => { throw new Error('no fetch in test'); },
+    FileReader: class {
+      readAsDataURL() {
+        this.result = 'data:audio/wav;base64,AAAA';
+        this.onloadend();
+      }
+    },
+    AbortController,
+  };
+}
+
+async function runSpeechPageEval(fakeDocument, fn, ...args) {
+  const page = {
+    evaluate: async (inner, ...innerArgs) => {
+      const script = new vm.Script(`(async () => (${inner.toString()})(${innerArgs.map((arg) => JSON.stringify(arg)).join(', ')}))()`);
+      return script.runInNewContext(speechVmContext(fakeDocument));
+    },
+  };
+  return fn === readAIStudioSpeechState ? readAIStudioSpeechState(page) : fn(page, ...args);
+}
+
+it('speech studio state reads the script input, takes, and the selected TTS model', async () => {
+  const state = await runSpeechPageEval(speechFakeDocument(), readAIStudioSpeechState);
+  expect(state.hasScriptInput).toBe(true);
+  expect(state.audios[0].srcKey).toBe(`${SPEECH_TAKE_SRC}:${SPEECH_TAKE_SRC.length}`);
+  expect(state.audios[0].ready).toBe(true);
+  expect(state.audios[0].kind).toBe('data');
+  expect(state.currentModel).toBe('gemini-2.5-flash-preview-tts');
+  expect(state.isGenerating).toBe(false);
+  expect(state.runButtonFound).toBe(true);
+});
+
+it('speech audio export returns inline data URLs for the settled take', async () => {
+  const srcKey = `${SPEECH_TAKE_SRC}:${SPEECH_TAKE_SRC.length}`;
+  const result = await runSpeechPageEval(speechFakeDocument(), exportAIStudioSpeechAudio, srcKey);
+  expect(result.dataUrl).toBe(SPEECH_TAKE_SRC);
+  expect(result.mimeType).toBe('audio/wav');
+  expect(result.duration).toBeCloseTo(3.97);
+});
+
+it('speech studio fixture contains the audio command UI contract', () => {
+  const fixture = fs.readFileSync(path.resolve(testDirectory, '__fixtures__', 'speech-studio-zh-cn.html'), 'utf8');
+  for (const snippet of [
+    'lang="zh-CN"',
+    'generate-speech',
+    'aria-label="Speech block text"',
+    'speech-blocks-container',
+    '<ms-music-player>',
+    '<audio src="data:audio/wav;base64,',
+    '<ms-run-button>',
+    'type="submit"',
+    'aria-label="Select primary model"',
+    'gemini-2.5-flash-preview-tts',
+  ]) {
+    expect(fixture.includes(snippet)).toBeTruthy();
+  }
+});
+
+it('veo turn fixture contains the video command UI contract', () => {
+  const fixture = fs.readFileSync(path.resolve(testDirectory, '__fixtures__', 'veo-turn-zh-cn.html'), 'utf8');
+  for (const snippet of [
+    'lang="zh-CN"',
+    'prompts/new_video',
+    '<ms-prompt-box>',
+    'aria-label="Enter a prompt to generate a video"',
+    'veo-3.1-lite-generate-preview',
+    '视频时长 8s',
+    '<ms-chat-turn ',
+    '<video src="blob:',
+    '<ms-run-button>',
+    'aria-label="停止生成"',
+  ]) {
+    expect(fixture.includes(snippet)).toBeTruthy();
+  }
 });

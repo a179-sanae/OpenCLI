@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { getRegistry } from '@jackwener/opencli/registry';
 import './ask.js';
 import './image.js';
+import './audio.js';
+import './video.js';
 import './models.js';
 import './status.js';
 import './auth.js';
 
 describe('aistudio command registration', () => {
-  const commands = ['ask', 'image', 'models', 'status', 'login', 'whoami'];
+  const commands = ['ask', 'image', 'audio', 'video', 'models', 'status', 'login', 'whoami'];
 
   it('registers all commands with the aistudio site and cookie strategy', () => {
     for (const name of commands) {
@@ -22,14 +24,16 @@ describe('aistudio command registration', () => {
     // ask runs on an ephemeral site session (fresh page context per call);
     // every other command keeps the persistent session.
     expect(getRegistry().get('aistudio/ask').siteSession).toBe('ephemeral');
-    for (const name of ['image', 'models', 'status', 'login', 'whoami']) {
+    for (const name of ['image', 'audio', 'video', 'models', 'status', 'login', 'whoami']) {
       expect(getRegistry().get(`aistudio/${name}`).siteSession).toBe('persistent');
     }
   });
 
-  it('exposes write access for ask/image/login and read access for models/status/whoami', () => {
+  it('exposes write access for ask/image/audio/video/login and read access for models/status/whoami', () => {
     expect(getRegistry().get('aistudio/ask').access).toBe('write');
     expect(getRegistry().get('aistudio/image').access).toBe('write');
+    expect(getRegistry().get('aistudio/audio').access).toBe('write');
+    expect(getRegistry().get('aistudio/video').access).toBe('write');
     expect(getRegistry().get('aistudio/login').access).toBe('write');
     expect(getRegistry().get('aistudio/models').access).toBe('read');
     expect(getRegistry().get('aistudio/status').access).toBe('read');

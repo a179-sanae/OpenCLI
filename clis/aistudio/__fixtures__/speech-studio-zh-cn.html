@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<!-- zh-CN fixture for the generate-speech studio (audio command contract):
+     scene-style script editor + footer audio player. Mirrors the live DOM
+     observed 2026-08-30 on aistudio.google.com/generate-speech. -->
+<html lang="zh-CN">
+<body>
+  <ms-run-settings class="collapsed">
+    <div class="overlay-header"><h2 class="no-select header-label">Run settings</h2></div>
+    <ms-model-selector>
+      <button class="model-selector-card" aria-label="Select primary model">
+        <span class="title">Gemini 2.5 Flash Preview TTS</span>
+        <span>gemini-2.5-flash-preview-tts</span>
+      </button>
+    </ms-model-selector>
+    <span>模型设置</span>
+  </ms-run-settings>
+  <section class="speech-prompt-main">
+    <div class="speech-blocks-container">
+      <div class="speech-block-card">
+        <textarea aria-label="Scene" placeholder="例如：夜晚繁忙的街道……"></textarea>
+        <textarea aria-label="Sample Context" placeholder="例如：上一位发言者刚讲完一个长故事……"></textarea>
+        <textarea aria-label="Speech block text" placeholder="[开心] 这是个好主意！输入“[”可使用朗读标记"></textarea>
+        <button class="add-speech-block-button">添加语音块</button>
+      </div>
+    </div>
+  </section>
+  <ms-audio-footer>
+    <section class="footer">
+      <div class="footer-controls">
+        <ms-music-player>
+          <div class="player-container">
+            <audio src="data:audio/wav;base64,UklGRrLoAgBXQVZF" data-test="generated-audio"></audio>
+          </div>
+        </ms-music-player>
+      </div>
+    </section>
+  </ms-audio-footer>
+  <ms-run-button>
+    <button type="submit" aria-label="Run">Run <span>Ctrl ⏎</span></button>
+  </ms-run-button>
+</body>
+</html>

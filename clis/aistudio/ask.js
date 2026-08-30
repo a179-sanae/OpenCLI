@@ -88,11 +88,18 @@ export const askCommand = cli({
     });
     const unsupportedCategory = settings.selectedModel?.category;
     if (unsupportedCategory && ['image', 'video', 'audio', 'live'].includes(unsupportedCategory)) {
+      const categoryCommand = unsupportedCategory === 'image'
+        ? 'image'
+        : unsupportedCategory === 'audio'
+          ? 'audio'
+          : unsupportedCategory === 'video'
+            ? 'video'
+            : null;
       throw new ArgumentError(
         `Model ${settings.model} is a ${unsupportedCategory} model.`,
-        unsupportedCategory === 'image'
-          ? 'Use `opencli aistudio image <prompt> --model <model-id>` for image generation.'
-          : 'Video, audio, and live generation are not supported by the aistudio adapter yet; use a text model for `ask`.',
+        categoryCommand
+          ? `Use \`opencli aistudio ${categoryCommand} <prompt> --model <model-id>\` for ${unsupportedCategory} generation.`
+          : 'Live generation is not supported by the aistudio adapter yet; use a text model for `ask`.',
       );
     }
 
