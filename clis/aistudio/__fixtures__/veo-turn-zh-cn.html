@@ -1,6 +1,9 @@
 <!DOCTYPE html>
 <!-- zh-CN fixture for the Veo video surface (video command contract): chat
-     machinery on /prompts/new_video with a video take inside the model turn.
+     machinery on /prompts/new_video. The conversation area renders no
+     ms-chat-turn nodes — the prompt echoes as a .turn-prompt row inside
+     div.turns-container and every take lands in an ms-video-generation-gallery
+     as a blob-source <video>. The composer keeps its text after submission.
      Mirrors the live DOM observed 2026-08-30 on aistudio.google.com. -->
 <html lang="zh-CN">
 <body>
@@ -25,15 +28,11 @@
   <ms-run-button>
     <button type="submit" aria-label="停止生成">停止生成</button>
   </ms-run-button>
-  <ms-chat-turn id="turn-video-1">
-    <div class="chat-turn-container model render">
-      <div class="turn-content">
-        <video src="blob:https://aistudio.google.com/veo-take-1" data-test="generated-video"></video>
-      </div>
-      <div class="turn-footer">
-        <button aria-label="Bad response"></button>
-      </div>
-    </div>
-  </ms-chat-turn>
+  <div class="turns-container">
+    <div class="turn-prompt">一只无人机在日出时掠过海岸线</div>
+    <ms-video-generation-gallery>
+      <video src="blob:https://aistudio.google.com/veo-take-1" data-test="generated-video"></video>
+    </ms-video-generation-gallery>
+  </div>
 </body>
 </html>

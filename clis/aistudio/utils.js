@@ -3805,8 +3805,9 @@ export async function waitForAIStudioResponse(page, baseline, timeoutSeconds, op
         // (e.g. Nano Banana Pro draws the footer before its image materializes).
         // 8s was too eager and killed real Pro renders; the default 60s still
         // fails refusals ~4x faster than the default 240s deadline without
-        // dropping slow renders. Video callers raise the window (Veo renders
-        // for minutes) via emptyShellTimeoutSeconds.
+        // dropping slow renders. Slower media surfaces can widen the window
+        // via emptyShellTimeoutSeconds; the video command instead polls its
+        // own gallery wait against the shared deadline.
         if (emptyMs >= EMPTY_SHELL_TIMEOUT_MS) {
           // A silently blocked generation renders no classifier-visible error, so
           // capture the raw page surfaces before giving up: the thrown error then
@@ -4105,10 +4106,15 @@ export async function readAIStudioVideoState(page) {
 
 // Wait for a Veo submission to become observable: the prompt echoed back as a
 // .turn-prompt row, the gallery growing, or a progress indicator appearing.
-// There is deliberately no second submission action on timeout.
+// The echo/busy signals surface within seconds of the one submission action,
+// so the evidence window is deliberately bounded: waitForAIStudioState gives a
+// passed deadline precedence, so the cap must travel through maxSeconds — a
+// submission that never registers then fails fast instead of idling to the
+// full deadline. There is still no second submission action on timeout.
 export async function waitForAIStudioVideoSubmission(page, baseline, expectedPrompt, options = {}) {
   const normalizeAlphaNum = (value) => String(value || '').replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
   const expected = normalizeAlphaNum(expectedPrompt);
+  const evidenceWindowSeconds = Number(options.timeoutSeconds) > 0 ? Number(options.timeoutSeconds) : 30;
   return waitForAIStudioState(
     page,
     'AI Studio video prompt submission',
@@ -4124,7 +4130,8 @@ export async function waitForAIStudioVideoSubmission(page, baseline, expectedPro
     },
     {
       deadline: options.deadline,
-      timeoutSeconds: options.timeoutSeconds ?? 30,
+      timeoutSeconds: evidenceWindowSeconds,
+      maxSeconds: evidenceWindowSeconds,
       pollSeconds: 0.5,
       timeoutMessage: 'The single AI Studio video submission action was attempted, but the Veo surface did not echo the prompt or start a render. No second submission action was issued.',
     },
@@ -4293,7 +4300,7 @@ export function aiStudioExtensionFromMime(mimeType) {
   if (mime.includes('mpeg') || mime.includes('mp3')) return '.mp3';
   if (mime.includes('ogg')) return '.ogg';
   if (mime.includes('webm')) return '.webm';
-  if (mime.includes('mp4')) return '.mp4';
+  if (mime.includes('mp4')) return mime.startsWith('audio/') ? '.m4a' : '.mp4';
   if (mime.includes('jpeg') || mime.includes('jpg')) return '.jpg';
   if (mime.includes('gif')) return '.gif';
   return '.png';

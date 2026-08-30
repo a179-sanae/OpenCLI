@@ -140,14 +140,28 @@ export const videoCommand = cli({
     for (let index = 0; index < takes.length; index += 1) {
       const take = takes[index];
       const suffix = takes.length > 1 ? `_${index + 1}` : '';
-      const file = nextAvailableAIStudioPath(outputDir, `aistudio_${timestamp}${suffix}`, aiStudioExtensionFromMime('video/mp4'));
-      const asset = await exportAIStudioVideoAsset(page, take.src, { deadline });
+      let asset = null;
+      try {
+        asset = await exportAIStudioVideoAsset(page, take.src, { deadline });
+      } catch (error) {
+        // Deadline exhaustion must still point the user at the generated takes.
+        if (error instanceof TimeoutError) {
+          throw new TimeoutError(
+            'AI Studio video export',
+            timeout,
+            'The shared --timeout deadline expired while exporting take '
+              + `${index + 1}. The take is still in AI Studio: open ${responseUrl} and download it manually.`,
+          );
+        }
+        throw error;
+      }
       if (!asset?.dataUrl) {
         throw new CommandExecutionError(
           `AI Studio returned ${takes.length} video take(s), but take ${index + 1} could not be exported`,
           `Open ${responseUrl} and download the missing video(s) manually.`,
         );
       }
+      const file = nextAvailableAIStudioPath(outputDir, `aistudio_${timestamp}${suffix}`, aiStudioExtensionFromMime(asset.mimeType));
       const base64 = String(asset.dataUrl).replace(/^data:[^;]+;base64,/, '');
       await saveBase64ToFile(base64, file);
       const stat = await fs.promises.stat(file);

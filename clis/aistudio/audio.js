@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { cli, Strategy } from '@jackwener/opencli/registry';
-import { ArgumentError, CommandExecutionError, EmptyResultError } from '@jackwener/opencli/errors';
+import { ArgumentError, CommandExecutionError, EmptyResultError, TimeoutError } from '@jackwener/opencli/errors';
 import { saveBase64ToFile } from '@jackwener/opencli/utils';
 import {
   AISTUDIO_DOMAIN,
@@ -18,6 +18,7 @@ import {
   readAIStudioSpeechState,
   requirePositiveInteger,
   resolveAIStudioOutputDir,
+  resolveModelChoice,
   aiStudioExtensionFromMime,
   waitForAIStudioState,
 } from './utils.js';
@@ -57,17 +58,32 @@ export const audioCommand = cli({
     // Default model discovery runs on the chat surface where the shared model
     // picker machinery works unchanged; the speech page pins the choice again
     // through its ?model= URL below. readAIStudioModels returns every card on
-    // the Audio tab (including live-translate), so the category filter here is
-    // what keeps a non-TTS model from being picked.
+    // the Audio tab (including music models such as Lyria), so the category
+    // filter keeps non-TTS models out and the tts-id preference keeps a music
+    // model from becoming the default pick.
     let modelArg = String(kwargs.model || '').trim();
     if (!modelArg) {
       await navigateAIStudioPage(page, AISTUDIO_HOME, { deadline });
       const audioModels = await readAIStudioModels(page, 'audio', { deadline });
-      const first = audioModels.find((row) => row.category === 'audio');
+      const first = audioModels.find((row) => row.category === 'audio' && row.model.includes('tts'))
+        ?? audioModels.find((row) => row.category === 'audio');
       if (!first) {
         throw new EmptyResultError('aistudio audio', 'No audio models are available for the current account');
       }
       modelArg = first.model;
+    } else {
+      // A canonical id pins the speech page directly through its ?model= URL
+      // (lowercased, because the page readback always reports lowercase ids).
+      // Any other spelling is a friendly name and resolves through the same
+      // picker machinery the image/video commands use.
+      const canonical = modelArg.match(/^(?:gemini|imagen|veo|lyria|gemma)-[a-z0-9][a-z0-9.-]*$/i);
+      if (canonical) {
+        modelArg = canonical[0].toLowerCase();
+      } else {
+        await navigateAIStudioPage(page, AISTUDIO_HOME, { deadline });
+        const audioModels = await readAIStudioModels(page, 'audio', { deadline });
+        modelArg = resolveModelChoice(audioModels, modelArg, 'audio').model;
+      }
     }
 
     await navigateAIStudioPage(page, `${AISTUDIO_SPEECH_HOME}?model=${encodeURIComponent(modelArg)}`, { deadline });
@@ -122,7 +138,21 @@ export const audioCommand = cli({
       }];
     }
 
-    const asset = await exportAIStudioSpeechAudio(page, take.srcKey, { deadline });
+    let asset = null;
+    try {
+      asset = await exportAIStudioSpeechAudio(page, take.srcKey, { deadline });
+    } catch (error) {
+      // Deadline exhaustion must still point the user at the generated take.
+      if (error instanceof TimeoutError) {
+        throw new TimeoutError(
+          'AI Studio audio export',
+          timeout,
+          'The shared --timeout deadline expired while exporting the take. '
+            + `The take is still in AI Studio: open ${responseUrl} and download it manually.`,
+        );
+      }
+      throw error;
+    }
     if (!asset?.dataUrl) {
       throw new CommandExecutionError(
         'AI Studio generated speech audio, but the adapter could not export its bytes',

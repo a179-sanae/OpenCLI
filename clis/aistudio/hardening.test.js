@@ -132,6 +132,42 @@ function makeRunSettingsDom() {
   };
 }
 
+function makeVeoRowDom() {
+  // The Veo duration/fps/resolution selects carry no aria-label and no
+  // mat-label: the setter must find them through the bounded ancestor-row
+  // text match, so the rows here are plain "<label> <value>" text parents.
+  const durationSelect = fakeEl({ value: '8s' });
+  const fpsSelect = fakeEl({ value: '24 fps' });
+  const resolutionSelect = fakeEl({ value: '720p' });
+  const panel = { textContent: '视频时长 8s 帧率 24 fps 输出分辨率 720p' };
+  const durationRow = { textContent: '视频时长 8s', parentElement: panel };
+  const fpsRow = { textContent: '帧率 24 fps', parentElement: panel };
+  const resolutionRow = { textContent: '输出分辨率 720p', parentElement: panel };
+  durationSelect.parentElement = durationRow;
+  fpsSelect.parentElement = fpsRow;
+  resolutionSelect.parentElement = resolutionRow;
+  const options = [
+    ...['8s', '16s'].map((text) => fakeOption(text, durationSelect)),
+    ...['24 fps', '48 fps'].map((text) => fakeOption(text, fpsSelect)),
+    ...['720p', '1080p'].map((text) => fakeOption(text, resolutionSelect)),
+  ];
+  const modelSelector = { innerText: 'veo-3.1-lite-generate-preview', textContent: 'veo-3.1-lite-generate-preview' };
+  const root = { querySelector: (sel) => (sel === 'ms-model-selector' ? modelSelector : null) };
+  const document = {
+    querySelector(sel) {
+      if (sel === 'ms-run-settings') return root;
+      if (sel === 'ms-run-settings ms-model-selector') return modelSelector;
+      return null;
+    },
+    querySelectorAll(sel) {
+      if (sel === 'ms-run-settings mat-select') return [durationSelect, fpsSelect, resolutionSelect];
+      if (sel === 'mat-option, [role="option"]') return options;
+      return [];
+    },
+  };
+  return { document, selects: [durationSelect, fpsSelect, resolutionSelect] };
+}
+
 function makeMockPage(dom, options = {}) {
   return {
     async wait() {},
@@ -227,6 +263,40 @@ it('select rejects a value that is not among the visible options', async () => {
     .then(() => null, (e) => e);
   expect(error).toBeInstanceOf(ArgumentError);
   expect(error.message).toMatch(/8K/);
+});
+
+it('veo row-label matching finds selects without aria-labels and never crosses rows', async () => {
+  // The shared panel ancestor starts with the first row's label, so every
+  // select matches the "Video duration" request through it; the first select
+  // in DOM order is the requested row's own select, which must win.
+  const dom = makeVeoRowDom();
+  const page = makeMockPage(dom);
+  const result = await withGlobalDom(dom.document, () => setAIStudioSelect(page, 'Video duration', '8s'));
+  expect(result).toBe('8s');
+  expect(dom.selects[0].value).toBe('8s');
+
+  // A later row's label must reach exactly that row's select, never an
+  // earlier one.
+  const fpsDom = makeVeoRowDom();
+  const fpsPage = makeMockPage(fpsDom);
+  const fpsResult = await withGlobalDom(fpsDom.document, () => setAIStudioSelect(fpsPage, 'Frame rate', '24 fps'));
+  expect(fpsResult).toBe('24 fps');
+  expect(fpsDom.selects[1].value).toBe('24 fps');
+
+  const outputDom = makeVeoRowDom();
+  const outputPage = makeMockPage(outputDom);
+  const outputResult = await withGlobalDom(outputDom.document, () => setAIStudioSelect(outputPage, 'Output resolution', '720p'));
+  expect(outputResult).toBe('720p');
+  expect(outputDom.selects[2].value).toBe('720p');
+
+  // "Resolution" must not match a "输出分辨率" row: the row text does not
+  // start with the requested label, so the setting is absent on this surface.
+  const missingDom = makeVeoRowDom();
+  const missingPage = makeMockPage(missingDom);
+  const error = await withGlobalDom(missingDom.document, () => setAIStudioSelect(missingPage, 'Resolution', '720p'))
+    .then(() => null, (e) => e);
+  expect(error).toBeInstanceOf(ArgumentError);
+  expect(error.message).toMatch(/Resolution is not available/);
 });
 
 it('temperature number control writes and verifies the final value', async () => {

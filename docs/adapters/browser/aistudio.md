@@ -135,7 +135,7 @@ saved as a WAV/MP3 file.
 
 | Option | Meaning |
 |---|---|
-| `--model` | TTS model id (default: first available audio model) |
+| `--model` | TTS model id or unique name (default: first available audio model) |
 | `--output-dir` | Output directory (default: `~/Music/aistudio`) |
 | `--skip-download` | Return the AI Studio link without downloading |
 | `--timeout` | Maximum generation time in seconds (default: 240) |
@@ -143,11 +143,13 @@ saved as a WAV/MP3 file.
 ## `video` options
 
 Veo reuses the chat surface under `/prompts/new_video`; renders take minutes,
-so both the stall and empty-shell windows are widened for this command.
+so the default `--timeout` is 600s. The command never re-submits: a prompt
+that never echoes fails after a bounded evidence window, and rendering waits
+run to the shared deadline.
 
 | Option | Meaning |
 |---|---|
-| `--model` | Video model id (default: first available video model; Veo tiers are paid) |
+| `--model` | Video model id or unique name (default: first available video model; Veo tiers are paid) |
 | `--aspect-ratio` | `16:9` (default) or `9:16` |
 | `--duration` | Video duration shown by the model, e.g. `8s` (omitted = leave unchanged) |
 | `--output-dir` | Output directory (default: `~/Videos/aistudio`) |
