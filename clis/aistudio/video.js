@@ -10,19 +10,23 @@ import {
   applyAIStudioSettings,
   createAIStudioDeadline,
   exportAIStudioVideoAsset,
+  focusAIStudioComposer,
   nextAvailableAIStudioPath,
   readAIStudioModels,
+  readAIStudioVideoState,
   requirePositiveInteger,
   resolveAIStudioOutputDir,
   aiStudioExtensionFromMime,
-  sendAIStudioMessage,
   startNewAIStudioChat,
-  waitForAIStudioResponse,
+  submitAIStudioComposerWithKeyboard,
+  waitForAIStudioState,
+  waitForAIStudioVideoSubmission,
 } from './utils.js';
 
-// Veo renders one or more takes into <video> elements inside the model turn of
-// the /prompts/new_video chat surface, so the whole chat machinery (snapshot,
-// single-submit contract, response waiting) is reused unchanged.
+// Veo runs on the chat-like surface /prompts/new_video, but that surface
+// renders no ms-chat-turn nodes: prompts echo as .turn-prompt rows and every
+// take lands in an ms-video-generation-gallery as a blob <video>. Setup and
+// submission reuse the chat machinery; waiting and extraction are Veo-specific.
 export const videoCommand = cli({
   site: 'aistudio',
   name: 'video',
@@ -58,7 +62,7 @@ export const videoCommand = cli({
     let modelArg = String(kwargs.model || '').trim();
     if (!modelArg) {
       const videoModels = await readAIStudioModels(page, 'video', { deadline });
-      const first = videoModels[0];
+      const first = videoModels.find((row) => row.category === 'video');
       if (!first) {
         throw new EmptyResultError('aistudio video', 'No video models are available for the current account');
       }
@@ -72,32 +76,60 @@ export const videoCommand = cli({
       deadline,
     });
 
-    const submission = await sendAIStudioMessage(page, kwargs.prompt, { deadline });
-    // Veo renders for minutes. A ticking progress label counts as activity,
-    // and the stall/empty-shell windows are widened to render scale so a slow
-    // render survives while a frozen one still fails before the deadline.
-    const response = await waitForAIStudioResponse(page, submission, timeout, {
-      deadline,
-      stallTimeoutSeconds: 180,
-      emptyShellTimeoutSeconds: 300,
-    });
-    const videos = response.videos || [];
-    if (!videos.length) {
-      throw new EmptyResultError(
-        'aistudio video',
-        response.text
-          ? `AI Studio returned text but no video: ${response.text.slice(0, 240)}`
-          : 'AI Studio completed without a generated video.',
+    const baselineState = await readAIStudioVideoState(page);
+    if (!baselineState.hasComposer) {
+      throw new CommandExecutionError('AI Studio video prompt editor was not found');
+    }
+    const baseline = new Set(baselineState.gallery.map((video) => video.src).filter(Boolean));
+
+    const composerSelector = baselineState.composerSelector;
+    await focusAIStudioComposer(page, composerSelector);
+    const filled = await page.fillText(composerSelector, String(kwargs.prompt)).catch(() => null);
+    if (!filled?.verified) {
+      throw new CommandExecutionError(
+        'Failed to insert the prompt into the AI Studio video editor',
+        `Expected a ${String(kwargs.prompt).length}-character prompt in the composer.`,
       );
     }
 
+    // One submission action per run (native shortcut on a visible tab, one Run
+    // click otherwise). The Veo surface never clears the composer, so the
+    // wait below keys on the prompt echo / gallery growth instead of the
+    // chat-turn evidence the ask flow uses.
+    await submitAIStudioComposerWithKeyboard(page, {
+      composerSelector,
+      expectedText: String(kwargs.prompt),
+      deadline,
+    });
+    await waitForAIStudioVideoSubmission(page, baseline, kwargs.prompt, { deadline });
+
+    // Takes render for minutes. A ready take has decoded dimensions and a
+    // positive duration; the deadline bounds the wait.
+    const settled = await waitForAIStudioState(
+      page,
+      'AI Studio video generation',
+      () => readAIStudioVideoState(page),
+      (current) => (current?.gallery || []).some((video) => video.ready && video.src && !baseline.has(video.src)),
+      {
+        deadline,
+        timeoutSeconds: timeout,
+        pollSeconds: 1,
+        timeoutMessage: 'AI Studio did not finish rendering a video take before the shared deadline.',
+      },
+    );
+    const takes = settled.gallery.filter((video) => video.ready && video.src && !baseline.has(video.src));
+    if (!takes.length) {
+      throw new EmptyResultError('aistudio video', 'AI Studio completed without a generated video take.');
+    }
+    const responseUrl = settled.url;
+
     if (kwargs['skip-download']) {
-      return videos.map((video) => ({
+      return takes.map((take) => ({
         status: 'generated',
         file: null,
         model: settings.model,
-        duration: video.duration || null,
-        link: response.url,
+        duration: take.duration || null,
+        link: responseUrl,
       }));
     }
 
@@ -105,15 +137,15 @@ export const videoCommand = cli({
     await fs.promises.mkdir(outputDir, { recursive: true });
     const timestamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
     const rows = [];
-    for (let index = 0; index < videos.length; index += 1) {
-      const video = videos[index];
-      const suffix = videos.length > 1 ? `_${index + 1}` : '';
-      const file = nextAvailableAIStudioPath(outputDir, `aistudio_${timestamp}${suffix}`, '.mp4');
-      const asset = await exportAIStudioVideoAsset(page, video.src, { deadline });
+    for (let index = 0; index < takes.length; index += 1) {
+      const take = takes[index];
+      const suffix = takes.length > 1 ? `_${index + 1}` : '';
+      const file = nextAvailableAIStudioPath(outputDir, `aistudio_${timestamp}${suffix}`, aiStudioExtensionFromMime('video/mp4'));
+      const asset = await exportAIStudioVideoAsset(page, take.src, { deadline });
       if (!asset?.dataUrl) {
         throw new CommandExecutionError(
-          `AI Studio returned ${videos.length} video take(s), but take ${index + 1} could not be exported`,
-          `Open ${response.url} and download the missing video(s) manually.`,
+          `AI Studio returned ${takes.length} video take(s), but take ${index + 1} could not be exported`,
+          `Open ${responseUrl} and download the missing video(s) manually.`,
         );
       }
       const base64 = String(asset.dataUrl).replace(/^data:[^;]+;base64,/, '');
@@ -122,15 +154,15 @@ export const videoCommand = cli({
       if (!stat.size) {
         throw new CommandExecutionError(
           'AI Studio video export produced an empty file',
-          `The browser returned video data for ${video.src || 'an unknown take'}, but ${file} is empty.`,
+          `The browser returned video data for ${take.src || 'an unknown take'}, but ${file} is empty.`,
         );
       }
       rows.push({
         status: 'saved',
         file,
         model: settings.model,
-        duration: asset.duration || video.duration || null,
-        link: response.url,
+        duration: asset.duration || take.duration || null,
+        link: responseUrl,
       });
     }
     return rows;

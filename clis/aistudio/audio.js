@@ -13,6 +13,7 @@ import {
   exportAIStudioSpeechAudio,
   navigateAIStudioPage,
   nextAvailableAIStudioPath,
+  openAIStudioSpeechEditor,
   readAIStudioModels,
   readAIStudioSpeechState,
   requirePositiveInteger,
@@ -55,12 +56,14 @@ export const audioCommand = cli({
 
     // Default model discovery runs on the chat surface where the shared model
     // picker machinery works unchanged; the speech page pins the choice again
-    // through its ?model= URL below.
+    // through its ?model= URL below. readAIStudioModels returns every card on
+    // the Audio tab (including live-translate), so the category filter here is
+    // what keeps a non-TTS model from being picked.
     let modelArg = String(kwargs.model || '').trim();
     if (!modelArg) {
       await navigateAIStudioPage(page, AISTUDIO_HOME, { deadline });
       const audioModels = await readAIStudioModels(page, 'audio', { deadline });
-      const first = audioModels[0];
+      const first = audioModels.find((row) => row.category === 'audio');
       if (!first) {
         throw new EmptyResultError('aistudio audio', 'No audio models are available for the current account');
       }
@@ -68,19 +71,7 @@ export const audioCommand = cli({
     }
 
     await navigateAIStudioPage(page, `${AISTUDIO_SPEECH_HOME}?model=${encodeURIComponent(modelArg)}`, { deadline });
-    const state = await waitForAIStudioState(
-      page,
-      'AI Studio speech editor readiness',
-      () => readAIStudioSpeechState(page),
-      (current) => !!current?.hasScriptInput && current?.currentModel === modelArg,
-      {
-        deadline,
-        timeoutSeconds: 20,
-        maxSeconds: 20,
-        pollSeconds: 0.2,
-        timeoutMessage: `AI Studio did not open the speech editor for ${modelArg}.`,
-      },
-    );
+    const state = await openAIStudioSpeechEditor(page, modelArg, { deadline });
 
     const baseline = new Set(state.audios.map((audio) => audio.srcKey).filter(Boolean));
     const inputSelector = 'textarea[aria-label="Speech block text"], textarea[aria-label*="Speech block" i]';

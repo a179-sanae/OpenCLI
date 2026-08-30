@@ -4026,6 +4026,111 @@ export async function exportAIStudioImages(page, urls, options = {}) {
   return result;
 }
 
+// The speech studio lands on a marketing-style landing view: the script
+// editor only materializes after clicking the "Turn text into natural
+// sounding speech" call-to-action. Poll until the editor is up, clicking the
+// CTA whenever it is still missing, and require the requested TTS model to be
+// the one the surface pinned via its ?model= URL.
+export async function openAIStudioSpeechEditor(page, requestedModel, options = {}) {
+  return waitForAIStudioState(
+    page,
+    'AI Studio speech editor readiness',
+    async () => {
+      let state = await readAIStudioSpeechState(page);
+      if (!state?.hasScriptInput) {
+        await evaluatePage(page, 'AI Studio speech editor open', () => {
+          const cta = Array.from(document.querySelectorAll('button')).find((button) => /turn text into natural.sounding speech|文字转语音|把文本转换成自然语音/i.test(button.textContent || ''));
+          if (cta) cta.click();
+          return { clicked: !!cta };
+        }).catch(() => null);
+        state = await readAIStudioSpeechState(page);
+      }
+      return state;
+    },
+    (current) => !!current?.hasScriptInput && current?.currentModel === requestedModel,
+    {
+      deadline: options.deadline,
+      timeoutSeconds: 20,
+      maxSeconds: 20,
+      pollSeconds: 0.5,
+      timeoutMessage: `AI Studio did not open the speech editor for ${requestedModel}.`,
+    },
+  );
+}
+
+// The Veo surface (/prompts/new_video) renders no ms-chat-turn nodes at all:
+// prompts appear as .turn-prompt rows inside div.turns-container and every
+// take lands in an ms-video-generation-gallery as a blob-source <video>. The
+// composer also keeps its text after submission, so submission evidence is
+// the prompt echo or gallery growth — never a cleared composer.
+export async function readAIStudioVideoState(page) {
+  return evaluatePage(page, 'AI Studio video state', (runSelectors, composerSelectors) => {
+    const composerSelector = composerSelectors.find((selector) => document.querySelector(selector)) || null;
+    const composer = composerSelector ? document.querySelector(composerSelector) : null;
+    const gallery = Array.from(document.querySelectorAll('ms-video-generation-gallery video')).map((video) => {
+      const src = String(video.currentSrc || video.src || '');
+      return {
+        src,
+        width: video.videoWidth || 0,
+        height: video.videoHeight || 0,
+        duration: Number.isFinite(Number(video.duration)) ? Number(video.duration) : 0,
+        ready: !!src && (video.readyState || 0) >= 2 && (video.videoWidth || 0) > 0,
+      };
+    });
+    const prompts = Array.from(document.querySelectorAll('.turn-prompt'))
+      .map((node) => String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+    const container = document.querySelector('.turns-container') || document;
+    const busy = !!container.querySelector('[role="progressbar"], [aria-busy="true"], mat-progress-spinner');
+    const runButton = runSelectors.map((selector) => document.querySelector(selector)).find(Boolean);
+    const runLabel = runButton
+      ? String(`${runButton.getAttribute('aria-label') || ''} ${runButton.textContent || ''}`).replace(/\s+/g, ' ').trim()
+      : '';
+    return {
+      url: window.location.href,
+      hasComposer: !!composer,
+      composerSelector,
+      composerText: composer?.value ?? '',
+      gallery,
+      prompts,
+      busy,
+      isGenerating: /^(?:stop|cancel|停止生成|取消)(?:\s|$)/i.test(runLabel) || busy,
+      runButtonFound: !!runButton,
+      runButtonDisabled: !!runButton && (runButton.disabled || runButton.getAttribute('aria-disabled') === 'true'),
+      currentModel: (document.querySelector('ms-model-selector')?.innerText || '')
+        .match(/\b(?:gemini|imagen|veo|lyria|gemma)-[a-z0-9][a-z0-9.-]*\b/i)?.[0]?.toLowerCase() || null,
+    };
+  }, AI_STUDIO_SELECTORS.runButton, AI_STUDIO_SELECTORS.composer);
+}
+
+// Wait for a Veo submission to become observable: the prompt echoed back as a
+// .turn-prompt row, the gallery growing, or a progress indicator appearing.
+// There is deliberately no second submission action on timeout.
+export async function waitForAIStudioVideoSubmission(page, baseline, expectedPrompt, options = {}) {
+  const normalizeAlphaNum = (value) => String(value || '').replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+  const expected = normalizeAlphaNum(expectedPrompt);
+  return waitForAIStudioState(
+    page,
+    'AI Studio video prompt submission',
+    () => readAIStudioVideoState(page),
+    (current) => {
+      if ((current?.gallery || []).some((video) => !baseline.has(video.src))) return true;
+      if (current?.busy) return true;
+      if (!expected) return false;
+      return (current?.prompts || []).some((prompt) => {
+        const actual = normalizeAlphaNum(prompt);
+        return actual.length > 0 && (expected === actual || expected.startsWith(actual) || actual.startsWith(expected));
+      });
+    },
+    {
+      deadline: options.deadline,
+      timeoutSeconds: options.timeoutSeconds ?? 30,
+      pollSeconds: 0.5,
+      timeoutMessage: 'The single AI Studio video submission action was attempted, but the Veo surface did not echo the prompt or start a render. No second submission action was issued.',
+    },
+  );
+}
+
 // One submission action per speech run: the speech studio shares the chat
 // page's ms-run-button submit element, so the same single-click contract
 // applies — the caller never issues a second click when a take is slow.
