@@ -124,7 +124,7 @@ it('findNewModelTurn returns null while only a thinking turn exists', () => {
 
 it('AI Studio selectors keep structural anchors before localized fallbacks', () => {
   expect(AI_STUDIO_SELECTORS.composer[0]).toBe('ms-prompt-box textarea');
-  expect(AI_STUDIO_SELECTORS.runButton[0]).toBe('ms-prompt-box ms-run-button button[type="submit"]');
+  expect(AI_STUDIO_SELECTORS.runButton[0]).toBe('ms-prompt-box ms-run-button button');
   expect(AI_STUDIO_SELECTORS.modelPickerSearch[0]).toBe('mat-dialog-container input[type="text"][aria-label="Search"]');
   expect(AI_STUDIO_SELECTORS.mediaInsert.includes('button[data-test="selectMediaMenu"]')).toBeTruthy();
   expect(AI_STUDIO_SELECTORS.uploadInput.includes('input[data-test-upload-file-input]')).toBeTruthy();
@@ -301,6 +301,26 @@ it('model parser accepts every supplied canonical model id', () => {
   }
 });
 
+it('model cards resolve via the carousel id attribute when the family is not in MODEL_ID_RE', () => {
+  // 2026-09 catalog: agent families (antigravity, deep-research) do not match
+  // the gemini/imagen/veo/lyria/gemma id regex — the card id attribute is the
+  // canonical handle and anchors the same name/description split.
+  const row = parseModelCardText(
+    'spark Antigravity Agent Preview New Paid antigravity-preview-09-2026 info Agent preview card',
+    'antigravity-preview-09-2026',
+  );
+  expect(row?.model).toBe('antigravity-preview-09-2026');
+  expect(row?.name).toBe('Antigravity Agent Preview');
+  expect(row?.availability).toBe('paid');
+  expect(row?.description).toBe('Agent preview card');
+});
+
+it('model cards without an id attribute still parse via the text regex', () => {
+  const row = parseModelCardText('spark Gemini 3.7 Flash gemini-3.7-flash info Our high-speed model');
+  expect(row?.model).toBe('gemini-3.7-flash');
+  expect(row?.name).toBe('Gemini 3.7 Flash');
+});
+
 it('searched model selection validates category and finds the exact result', () => {
   const resolved = resolveAIStudioModelSearchResult(
     ['Gemini 3.5 Flash-Lite gemini-3.5-flash-lite'],
@@ -330,7 +350,8 @@ it('Chinese prompt fixture contains the visible UI contract', () => {
     'data-test-upload-file-input',
     'aria-label="Remove media"',
     '<ms-run-button>',
-    'type="submit"',
+    'ms-button-primary',
+    'run-shortcut-tip',
     'aria-label="停止生成"',
     'role="alert"',
     '配额限制',
@@ -492,7 +513,7 @@ it('snapshot only blocks completion on generated images that are still decoding'
 
 it('snapshot reads a model response rendered inside nested open shadow roots', async () => {
   const dom = new JSDOM(`<!doctype html><body>
-    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button type="submit">Run</button></ms-run-button></ms-prompt-box>
+    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button class="ms-button-primary" aria-disabled="false">Run</button></ms-run-button></ms-prompt-box>
     <ms-chat-turn id="shadow-model"><div class="chat-turn-container model"></div></ms-chat-turn>
   </body>`);
   const document = dom.window.document;
@@ -529,7 +550,7 @@ it('snapshot reads a model response rendered inside nested open shadow roots', a
 
 it('snapshot excludes turn actions and reads the current model text chunk', async () => {
   const dom = new JSDOM(`<!doctype html><body>
-    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button type="submit">Run</button></ms-run-button></ms-prompt-box>
+    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button class="ms-button-primary" aria-disabled="false">Run</button></ms-run-button></ms-prompt-box>
     <ms-chat-turn id="user-turn"><div class="chat-turn-container user render">
       <ms-prompt-chunk>Reply with exactly CONTROL_FILTER_OK.</ms-prompt-chunk>
     </div></ms-chat-turn>
@@ -564,7 +585,7 @@ it('snapshot excludes turn actions and reads the current model text chunk', asyn
 
 it('snapshot does not concatenate a prompt shadow chunk with the model response chunk', async () => {
   const dom = new JSDOM(`<!doctype html><body>
-    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button type="submit">Run</button></ms-run-button></ms-prompt-box>
+    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button class="ms-button-primary" aria-disabled="false">Run</button></ms-run-button></ms-prompt-box>
     <ms-chat-turn id="model-turn"><div class="chat-turn-container model render">
       <ms-prompt-chunk>TI</ms-prompt-chunk>
       <div class="turn-content"><ms-text-chunk>TITLER-DOM-OK.</ms-text-chunk></div>
@@ -592,7 +613,7 @@ it('snapshot does not concatenate a prompt shadow chunk with the model response 
 
 it('snapshot keeps a control-only model turn empty while its footer is visible', async () => {
   const dom = new JSDOM(`<!doctype html><body>
-    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button type="submit">Run</button></ms-run-button></ms-prompt-box>
+    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button class="ms-button-primary" aria-disabled="false">Run</button></ms-run-button></ms-prompt-box>
     <ms-chat-turn id="model-turn"><div class="chat-turn-container model render">
       <div class="actions-container"><ms-chat-turn-options><button aria-label="Open options"><span class="material-symbols-outlined">more_vert</span></button></ms-chat-turn-options></div>
       <div class="turn-footer"><span class="model-run-time-pill">0.9s</span></div>
@@ -618,7 +639,7 @@ it('snapshot keeps a control-only model turn empty while its footer is visible',
 
 it('snapshot ignores a benign role=alert live region inside a model turn', async () => {
   const dom = new JSDOM(`<!doctype html><body>
-    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button type="submit">Run</button></ms-run-button></ms-prompt-box>
+    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button class="ms-button-primary" aria-disabled="false">Run</button></ms-run-button></ms-prompt-box>
     <ms-chat-turn><div class="chat-turn-container model">
       <div class="turn-content"><ms-text-chunk>LIVE_REGION_OK</ms-text-chunk><div role="alert">This explanation covers login errors, failed requests, and subscriptions.</div></div>
       <div class="turn-footer"><button aria-label="Good response">Good</button></div>
@@ -641,9 +662,56 @@ it('snapshot ignores a benign role=alert live region inside a model turn', async
   }
 });
 
+it('snapshot finds the rebuilt submit-less Run button and reads the shortcut from its describedby tooltip', async () => {
+  // The 2026-09 AI Studio rebuild removed type="submit" from the Run button and
+  // moved the Enter-vs-Ctrl+Enter hint into the cdk-describedby tooltip element
+  // referenced by aria-describedby ("Send prompt (Ctrl + Enter)").
+  const dom = new JSDOM(`<!doctype html><body>
+    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button ms-button class="ms-button-primary" aria-disabled="false" aria-describedby="run-tip"><span class="run-button-label">Run</span><span>keyboard_return</span></button></ms-run-button>
+    <div id="run-tip" hidden>Send prompt (Ctrl + Enter)
+New line (Enter)</div>
+  </body>`);
+  const previousDocument = globalThis.document;
+  const previousWindow = globalThis.window;
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  try {
+    const snapshot = await readAIStudioSnapshot({ evaluate: async (fn, ...args) => fn(...args) });
+    expect(snapshot.runButtonFound).toBe(true);
+    expect(snapshot.runButtonDisabled).toBe(false);
+    expect(snapshot.runButtonShortcut).toBe('ctrl-enter');
+  } finally {
+    globalThis.document = previousDocument;
+    globalThis.window = previousWindow;
+    dom.window.close();
+  }
+});
+
+it('snapshot reports the Enter shortcut when the describedby tooltip has no Ctrl hint', async () => {
+  const dom = new JSDOM(`<!doctype html><body>
+    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button ms-button class="ms-button-primary" aria-disabled="true" aria-describedby="run-tip"><span class="run-button-label">Run</span><span>keyboard_return</span></button></ms-run-button>
+    <div id="run-tip" hidden>Send prompt (Enter)
+New line (Shift + Enter)</div>
+  </body>`);
+  const previousDocument = globalThis.document;
+  const previousWindow = globalThis.window;
+  globalThis.document = dom.window.document;
+  globalThis.window = dom.window;
+  try {
+    const snapshot = await readAIStudioSnapshot({ evaluate: async (fn, ...args) => fn(...args) });
+    expect(snapshot.runButtonFound).toBe(true);
+    expect(snapshot.runButtonDisabled).toBe(true);
+    expect(snapshot.runButtonShortcut).toBe('enter');
+  } finally {
+    globalThis.document = previousDocument;
+    globalThis.window = previousWindow;
+    dom.window.close();
+  }
+});
+
 it('snapshot recognizes an explicit ms-error-message without role=alert', async () => {
   const dom = new JSDOM(`<!doctype html><body>
-    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button type="submit">Run</button></ms-run-button></ms-prompt-box>
+    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button class="ms-button-primary" aria-disabled="false">Run</button></ms-run-button></ms-prompt-box>
     <ms-error-message>Quota exceeded. Please try again later.</ms-error-message>
   </body>`);
   const previousDocument = globalThis.document;
@@ -664,7 +732,7 @@ it('snapshot surfaces an explicit error widget verbatim at any length', async ()
   const longError = Array.from({ length: 12 }, (_, i) => `Sentence ${i + 1} of the native quota error message.`).join(' ');
   if (longError.length <= 160) throw new Error('fixture too short');
   const dom = new JSDOM(`<!doctype html><body>
-    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button type="submit">Run</button></ms-run-button></ms-prompt-box>
+    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button class="ms-button-primary" aria-disabled="false">Run</button></ms-run-button></ms-prompt-box>
     <ms-error-message>${longError}</ms-error-message>
   </body>`);
   const previousDocument = globalThis.document;
@@ -688,7 +756,7 @@ it('snapshot still window-trims a broad live region longer than 160 chars', asyn
   // no longer participate here (anchored full-match), so use an inline idiom.
   const longLive = `Generation status: content generation failed while streaming. ${filler}`.slice(0, 240);
   const dom = new JSDOM(`<!doctype html><body>
-    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button type="submit">Run</button></ms-run-button></ms-prompt-box>
+    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button class="ms-button-primary" aria-disabled="false">Run</button></ms-run-button></ms-prompt-box>
     <div role="alert">${longLive}</div>
   </body>`);
   const previousDocument = globalThis.document;
@@ -738,7 +806,7 @@ it('empty-shell evidence captures the raw model turn and live regions verbatim',
 
 it('snapshot preserves syntax-highlighted code blocks as fenced code', async () => {
   const dom = new JSDOM(`<!doctype html><body>
-    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button type="submit">Run</button></ms-run-button></ms-prompt-box>
+    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button class="ms-button-primary" aria-disabled="false">Run</button></ms-run-button></ms-prompt-box>
     <ms-chat-turn><div class="chat-turn-container model">
       <div class="turn-content"><pre><code><span class="token keyword">const</span><span class="token plain"> answer = 42;</span></code></pre></div>
       <div class="turn-footer"><button aria-label="Good response">Good</button></div>
@@ -1859,7 +1927,7 @@ it('every blocked-content pattern fires on a refusal and none fires on benign pr
 
 it('a refusal surfaces the chrome-stripped answer text, not the greedy detection haystack', async () => {
   const dom = new JSDOM(`<!doctype html><body>
-    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button type="submit">Run</button></ms-run-button></ms-prompt-box>
+    <ms-prompt-box><textarea aria-label="Enter a prompt"></textarea><ms-run-button><button class="ms-button-primary" aria-disabled="false">Run</button></ms-run-button></ms-prompt-box>
     <ms-chat-turn id="model-turn"><div class="chat-turn-container model render">
       <div class="actions-container"><ms-chat-turn-options><button aria-label="Open options"><span class="material-symbols-outlined">more_vert</span></button></ms-chat-turn-options></div>
       <span class="author-label">Model</span>
@@ -2380,7 +2448,8 @@ it('speech studio fixture contains the audio command UI contract', () => {
     '<ms-music-player>',
     '<audio src="data:audio/wav;base64,',
     '<ms-run-button>',
-    'type="submit"',
+    'ms-button-primary',
+    'speech-run-tip',
     'aria-label="Select primary model"',
     'gemini-2.5-flash-preview-tts',
   ]) {

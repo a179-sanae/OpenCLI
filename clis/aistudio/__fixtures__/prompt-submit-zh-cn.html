@@ -9,7 +9,9 @@
       <input data-test-upload-file-input type="file" accept="image/*">
       <button aria-label="Remove media">移除</button>
       <ms-run-button>
-        <button type="submit" aria-disabled="false"><span>Run</span><span>keyboard_return</span></button>
+        <button ms-button class="ms-button-primary" aria-disabled="false" aria-describedby="run-shortcut-tip"><span class="run-button-label">Run</span><span>keyboard_return</span></button>
+        <div id="run-shortcut-tip" hidden>Send prompt (Enter)
+New line (Shift + Enter)</div>
       </ms-run-button>
     </ms-prompt-box>
     <ms-chat-turn id="user-1">

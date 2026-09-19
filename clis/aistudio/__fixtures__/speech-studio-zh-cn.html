@@ -36,7 +36,9 @@
     </section>
   </ms-audio-footer>
   <ms-run-button>
-    <button type="submit" aria-label="Run">Run <span>Ctrl ⏎</span></button>
+    <button ms-button class="ms-button-primary" aria-disabled="false" aria-describedby="speech-run-tip"><span class="run-button-label">Run</span><span>keyboard_return</span></button>
+    <div id="speech-run-tip" hidden>发送提示 (Ctrl + Enter)
+换行 (Enter)</div>
   </ms-run-button>
 </body>
 </html>

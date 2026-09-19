@@ -63,6 +63,12 @@ export const AI_STUDIO_SELECTORS = Object.freeze({
     'input[type="file"]',
   ]),
   runButton: Object.freeze([
+    // The 2026-09 AI Studio rebuild dropped type="submit" from the Run button
+    // (now <ms-run-button><button ms-button aria-disabled>Run keyboard_return</button>).
+    // Bare ms-run-button descendants are the structural anchors; the submit-type
+    // variants stay as fallbacks for older UI builds still in the wild.
+    'ms-prompt-box ms-run-button button',
+    'ms-run-button button',
     'ms-prompt-box ms-run-button button[type="submit"]',
     'ms-run-button button[type="submit"]',
     'ms-prompt-box button[type="submit"]',
@@ -505,19 +511,26 @@ export function modelCategory(modelId) {
   return 'text';
 }
 
-export function parseModelCardText(rawText) {
+export function parseModelCardText(rawText, forcedModel = null) {
   const raw = normalizeSpaces(rawText);
   const match = raw.match(MODEL_ID_RE);
-  if (!match) return null;
+  // The card's id attribute (model-carousel-row-models/<id>) is the canonical
+  // model id and covers newer families MODEL_ID_RE does not know (antigravity,
+  // deep-research, omni agents). When supplied it anchors the name/description
+  // split exactly like a regex hit would.
+  const model = String(forcedModel || match?.[0] || '').toLowerCase();
+  if (!model) return null;
+  const anchorIndex = match && match[0].toLowerCase() === model
+    ? match.index
+    : raw.toLowerCase().indexOf(model);
 
-  const model = match[0].toLowerCase();
-  const prefix = raw.slice(0, match.index).trim();
+  const prefix = anchorIndex > 0 ? raw.slice(0, anchorIndex).trim() : '';
   const name = prefix
     .replace(MATERIAL_ICON_PREFIX_RE, '')
     .replace(/\b(?:New|Paid)\b/gi, '')
     .replace(/\s+/g, ' ')
     .trim();
-  const suffix = raw.slice((match.index ?? 0) + match[0].length).trim();
+  const suffix = anchorIndex >= 0 ? raw.slice(anchorIndex + model.length).trim() : '';
   const infoMatch = suffix.match(/\binfo\b\s*/i);
   const descriptionStart = infoMatch ? suffix.slice((infoMatch.index ?? 0) + infoMatch[0].length) : suffix;
   const description = descriptionStart
@@ -578,8 +591,14 @@ export function resolveModelChoice(models, requested, requiredCategory = null) {
 
 function parseModelCardTexts(texts) {
   const seen = new Set();
-  return (Array.isArray(texts) ? texts : []).flatMap((text) => {
-    const row = parseModelCardText(text);
+  return (Array.isArray(texts) ? texts : []).flatMap((item) => {
+    // Items may be plain card texts or {id, text} pairs — the id attribute
+    // (model-carousel-row-models/<id>) is the canonical model id and keeps
+    // cards parseable when their family is not in MODEL_ID_RE.
+    const text = typeof item === 'string' ? item : String(item?.text || '');
+    const cardId = (typeof item === 'object' && item ? String(item.id || '') : '')
+      .match(/^model-carousel-row-models\/([a-z0-9][a-z0-9.-]*)$/i)?.[1] || null;
+    const row = parseModelCardText(text, cardId);
     if (!row || seen.has(row.model)) return [];
     seen.add(row.model);
     return [row];
@@ -1252,8 +1271,11 @@ async function readAIStudioModelPickerSearchState(page, searchSelector) {
     if (!dialog) return { dialogFound: false, searchFound: false, searchValue: '', cardTexts: [] };
     const search = document.querySelector(selector);
     const cardTexts = Array.from(dialog.querySelectorAll('.content-button'))
-      .map((element) => String(element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim())
-      .filter(Boolean);
+      .map((element) => ({
+        id: String(element.id || ''),
+        text: String(element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim(),
+      }))
+      .filter((item) => item.text);
     return {
       dialogFound: true,
       searchFound: search instanceof HTMLInputElement,
@@ -1340,8 +1362,11 @@ async function readOpenModelCards(page, options = {}) {
       });
       if (!dialog) return [];
       return Array.from(dialog.querySelectorAll('.content-button'))
-        .map((element) => String(element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim())
-        .filter(Boolean);
+        .map((element) => ({
+          id: String(element.id || ''),
+          text: String(element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim(),
+        }))
+        .filter((item) => item.text);
       }),
       (texts) => {
         if (!Array.isArray(texts)) throw new CommandExecutionError('AI Studio model picker returned unexpected data');
@@ -1360,7 +1385,10 @@ async function readOpenModelCards(page, options = {}) {
   } catch (error) {
     if (lastTexts.length) {
       throw new CommandExecutionError(
-        `AI Studio model cards contained no canonical model ids: ${lastTexts.slice(0, 3).join(' | ').slice(0, 600)}`,
+        `AI Studio model cards contained no canonical model ids: ${lastTexts.slice(0, 3)
+          .map((item) => (typeof item === 'string' ? item : item?.text || item?.id || ''))
+          .join(' | ')
+          .slice(0, 600)}`,
       );
     }
     throw error;
@@ -1523,6 +1551,9 @@ export async function selectAIStudioModel(page, requested, requiredCategory = nu
       });
       const cards = dialog ? Array.from(dialog.querySelectorAll('.content-button')) : [];
       const target = cards.find((element) => {
+        // The card id attribute is the canonical handle; the text regex stays
+        // as a fallback for builds that do not stamp ids on the buttons.
+        if (element.id === `model-carousel-row-models/${modelId}`) return true;
         const text = String(element.innerText || element.textContent || '').toLowerCase();
         const match = text.match(/\b(?:gemini|imagen|veo|lyria|gemma)-[a-z0-9][a-z0-9.-]*\b/i);
         return match?.[0]?.toLowerCase() === modelId;
@@ -1775,7 +1806,14 @@ export async function setAIStudioNumber(page, label, requested, options = {}) {
       foundAriaLabel: editor.getAttribute('aria-label') || '',
     };
   }, label, AI_STUDIO_NUMBER_LABELS);
-  if (!metadata) throw new ArgumentError(`${label} is not available for the selected AI Studio model`);
+  if (!metadata) {
+    // Thinking-model surfaces no longer expose Temperature/Top P at all:
+    // a missing control is a model limitation, not a user error. Callers
+    // opting into skipIfMissing get null back so the pipeline can warn
+    // and continue with the model default.
+    if (options.skipIfMissing) return null;
+    throw new ArgumentError(`${label} is not available for the selected AI Studio model`);
+  }
   if (metadata.disabled) throw new ArgumentError(`${label} is disabled for the selected AI Studio model`);
   const min = metadata.min === '' ? null : Number(metadata.min);
   const max = metadata.max === '' ? null : Number(metadata.max);
@@ -2381,8 +2419,16 @@ export async function applyAIStudioSettings(page, options = {}) {
     });
     if (!applied) process.stderr.write(`[warn] AI Studio model has no Thinking Level selector; skipped requested "${options.thinking}".\n`);
   }
-  if (options.temperature !== undefined) await setAIStudioNumber(page, 'Temperature', options.temperature, options);
-  if (options.topP !== undefined) await setAIStudioNumber(page, 'Top P', options.topP, options);
+  // Thinking-model surfaces no longer render Temperature/Top P controls at all;
+  // warn and continue with the model default instead of hard-failing the run.
+  if (options.temperature !== undefined) {
+    const applied = await setAIStudioNumber(page, 'Temperature', options.temperature, { ...options, skipIfMissing: true });
+    if (!applied) process.stderr.write(`[warn] AI Studio model has no Temperature control; skipped requested "${options.temperature}".\n`);
+  }
+  if (options.topP !== undefined) {
+    const applied = await setAIStudioNumber(page, 'Top P', options.topP, { ...options, skipIfMissing: true });
+    if (!applied) process.stderr.write(`[warn] AI Studio model has no Top P control; skipped requested "${options.topP}".\n`);
+  }
   if (options.maxOutputTokens !== undefined) {
     await setAIStudioNumber(page, 'Maximum output tokens', options.maxOutputTokens, options);
   }
@@ -3053,8 +3099,17 @@ export async function readAIStudioSnapshot(page) {
     const runButtonDisabled = !!runButton && (
       runButton.disabled || runButton.getAttribute('aria-disabled') === 'true'
     );
+    // The rebuilt Run button carries no aria-label/title at all — the submit
+    // shortcut hint ("Send prompt (Ctrl + Enter)" vs "Send prompt (Enter)")
+    // lives in the cdk-describedby tooltip element referenced by aria-describedby.
+    const runButtonTooltip = runButton
+      ? normalize(String(runButton.getAttribute('aria-describedby') || '')
+          .split(/\s+/)
+          .map((id) => (id ? (document.getElementById(id)?.textContent || '') : ''))
+          .join(' '))
+      : '';
     const runButtonLabel = runButton
-      ? normalize(`${runButton.getAttribute('aria-label') || ''} ${runButton.getAttribute('title') || ''}`)
+      ? normalize(`${runButton.getAttribute('aria-label') || ''} ${runButton.getAttribute('title') || ''} ${runButtonTooltip}`)
       : '';
     const runButtonText = runButton ? normalize(runButton.textContent || '') : '';
     const isCtrl = /\b(?:ctrl|control|cmd|command)\b/i.test(runButtonLabel)
